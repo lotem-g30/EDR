@@ -151,7 +151,7 @@ static DWORD WINAPI client_reader_thread(LPVOID param) {
                 strcmp(type_val, "drop_notice") == 0) {
                 DWORD dropped = 0;
                 json_get_uint(start, "dropped", &dropped);
-                printf("[IPC] drop_notice: %lu event(s) lost\n", dropped);
+                printf("  warn      %lu hook event(s) dropped\n", (unsigned long)dropped);
                 start = nl + 1;
                 continue;
             }
@@ -159,18 +159,16 @@ static DWORD WINAPI client_reader_thread(LPVOID param) {
             // normal API event
             char api[128] = {0};
             if (json_get_string(start, "api", api, sizeof(api))) {
-                printf("[IPC] event: %s\n", start);
-
                 DWORD target_pid = 0;
                 json_get_uint(start, "target_pid", &target_pid);
 
                 if (target_pid != 0) {
-                    // Feed every hook event into the correlator.
                     DWORD protect = 0;
-                    if (strcmp(api, "VirtualProtect") == 0)
+                    if (strcmp(api, "VirtualProtect")  == 0 ||
+                        strcmp(api, "VirtualAlloc")    == 0 ||
+                        strcmp(api, "VirtualAllocEx")  == 0)
                         json_get_uint(start, "protect", &protect);
 
-                    // Parse address (%p → bare hex) and size (decimal).
                     ULONGLONG addr = 0;
                     ULONGLONG sz   = 0;
                     char addr_str[64] = {0};
@@ -182,12 +180,12 @@ static DWORD WINAPI client_reader_thread(LPVOID param) {
 
                     correlator_feed_hook_event(target_pid, api, protect, addr, sz);
 
-                    // Queue a full memory+YARA scan for high-signal APIs.
-                    if (is_trigger_api(api)) {
-                        printf("[IPC] TRIGGER: api=%s target_pid=%lu -> queuing scan\n",
-                               api, target_pid);
+                    if (is_trigger_api(api))
                         tq_push(&ctx->server->triggers, target_pid);
-                    }
+
+                    /* Emit structured line so the dashboard parser can pick up hook events. */
+                    printf("[IPC] event: %s\n", start);
+                    fflush(stdout);
                 }
             }
 
@@ -209,6 +207,15 @@ static DWORD WINAPI client_reader_thread(LPVOID param) {
 static DWORD WINAPI accept_loop_thread(LPVOID param) {
     ArgusIpcServer* s = (ArgusIpcServer*)param;
 
+    /* NULL DACL — allow any integrity level (incl. medium) to connect. */
+    SECURITY_DESCRIPTOR sd;
+    SECURITY_ATTRIBUTES sa;
+    InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION);
+    SetSecurityDescriptorDacl(&sd, TRUE, NULL, FALSE);
+    sa.nLength              = sizeof(SECURITY_ATTRIBUTES);
+    sa.lpSecurityDescriptor = &sd;
+    sa.bInheritHandle       = FALSE;
+
     while (s->running) {
         HANDLE pipe = CreateNamedPipeW(
             L"\\\\.\\pipe\\argus-events",
@@ -216,7 +223,7 @@ static DWORD WINAPI accept_loop_thread(LPVOID param) {
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
             IPC_SERVER_MAX_INSTANCES,
             4096, 16384,
-            0, NULL
+            0, &sa
         );
         if (pipe == INVALID_HANDLE_VALUE) {
             Sleep(100);
@@ -229,7 +236,8 @@ static DWORD WINAPI accept_loop_thread(LPVOID param) {
             continue;
         }
 
-        printf("[IPC] client connected\n");
+        printf("  hook DLL connected\n");
+        fflush(stdout);
 
         ClientContext* ctx = (ClientContext*)calloc(1, sizeof(ClientContext));
         ctx->pipe   = pipe;

@@ -54,12 +54,6 @@ static DWORD WINAPI pesieve_reader_thread(LPVOID param) {
         BOOL ok = ReadFile(pipe, read_buf, sizeof(read_buf) - 1, &bytes_read, NULL);
         if (!ok || bytes_read == 0) break;
 
-        // Debug: show raw bytes as received, before any accumulation/parsing.
-        read_buf[bytes_read] = '\0';
-        printf("[PESIEVE-SERVER] DEBUG: ReadFile got %lu bytes: %.300s\n",
-               (unsigned long)bytes_read, read_buf);
-        fflush(stdout);
-
         if (accum_pos + (int)bytes_read >= (int)sizeof(accum)) {
             accum_pos = 0;
             continue;
@@ -73,9 +67,6 @@ static DWORD WINAPI pesieve_reader_thread(LPVOID param) {
                       accum_pos - (int)(start - accum))) != NULL) {
             *nl = '\0';
             if (*start != '\0') {
-                printf("[PESIEVE] %s\n", start);
-                fflush(stdout);
-
                 // Route finding to the correlator.
                 DWORD pid = 0;
                 char  finding_type[64] = {0};
@@ -90,6 +81,11 @@ static DWORD WINAPI pesieve_reader_thread(LPVOID param) {
                                         base_addr_str, sizeof(base_addr_str)))
                         base_addr = strtoull(base_addr_str, NULL, 16);
                     correlator_feed_pesieve(pid, finding_type, base_addr);
+
+                    /* Re-emit raw JSON so the dashboard parser picks it up
+                     * as a SCAN_FINDING (same format as internal scanner). */
+                    printf("%s\n", start);
+                    fflush(stdout);
                 }
             }
             start = nl + 1;
@@ -107,6 +103,15 @@ static DWORD WINAPI pesieve_reader_thread(LPVOID param) {
 static DWORD WINAPI pesieve_accept_thread(LPVOID param) {
     ArgusPesieveServer* s = (ArgusPesieveServer*)param;
 
+    /* NULL DACL — allow any integrity level (incl. medium) to connect. */
+    SECURITY_DESCRIPTOR sd;
+    SECURITY_ATTRIBUTES sa;
+    InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION);
+    SetSecurityDescriptorDacl(&sd, TRUE, NULL, FALSE);
+    sa.nLength              = sizeof(SECURITY_ATTRIBUTES);
+    sa.lpSecurityDescriptor = &sd;
+    sa.bInheritHandle       = FALSE;
+
     while (s->running) {
         HANDLE pipe = CreateNamedPipeW(
             L"\\\\.\\pipe\\argus-pesieve",
@@ -114,7 +119,7 @@ static DWORD WINAPI pesieve_accept_thread(LPVOID param) {
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
             PESIEVE_PIPE_MAX_INSTANCES,
             4096, 65536,
-            0, NULL);
+            0, &sa);
         if (pipe == INVALID_HANDLE_VALUE) {
             Sleep(100);
             continue;
@@ -126,7 +131,7 @@ static DWORD WINAPI pesieve_accept_thread(LPVOID param) {
             continue;
         }
 
-        printf("[PESIEVE-SERVER] DLL connected — reading findings\n");
+        printf("  PE-Sieve DLL connected\n");
         fflush(stdout);
 
         HANDLE t = CreateThread(NULL, 0, pesieve_reader_thread, pipe, 0, NULL);

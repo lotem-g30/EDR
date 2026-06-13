@@ -142,11 +142,25 @@ install(DIRECTORY include/argus
 )
 
 # ============================================================================
+# pe-sieve submodule - built as a static library
+# pe-sieve's CMakeLists.txt uses CMAKE_SOURCE_DIR (not PROJECT_SOURCE_DIR) for
+# the paramkit path, which breaks when consumed as a subdirectory. Override the
+# cache variable here so it resolves relative to the submodule, not the root.
+# ============================================================================
+set(PESIEVE_BUILD_MODE "STATIC" CACHE STRING "" FORCE)
+set(PESIEVE_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(PARAMKIT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/pe-sieve/paramkit/paramkit" CACHE PATH "" FORCE)
+add_subdirectory(pe-sieve)
+
+# ============================================================================
 # argus_pesieve - Injected DLL that runs PE-Sieve in-process and reports
 #                 findings back to argus_agent via \\.\pipe\argus-pesieve
 # ============================================================================
 add_library(argus_pesieve SHARED
     src/pesieve_dll/dllmain.cpp
+    src/pesieve_dll/ownership.cpp
+    src/pesieve_dll/patch_filter.cpp
+    src/pesieve_dll/ipc.cpp
 )
 
 target_include_directories(argus_pesieve PRIVATE
@@ -154,13 +168,10 @@ target_include_directories(argus_pesieve PRIVATE
     ${CMAKE_SOURCE_DIR}/pe-sieve/include
 )
 
-target_compile_definitions(argus_pesieve PRIVATE PESIEVE_STATIC_LIB)
-
+# PESIEVE_STATIC_LIB propagates transitively from the pe-sieve target (PUBLIC).
+# libpeconv, sig_finder, and paramkit propagate as interface link deps of pe-sieve.
 target_link_libraries(argus_pesieve PRIVATE
-    ${CMAKE_SOURCE_DIR}/pe-sieve/build/Debug/pe-sieve.lib
-    ${CMAKE_SOURCE_DIR}/pe-sieve/build/libpeconv/libpeconv/Debug/libpeconv.lib
-    ${CMAKE_SOURCE_DIR}/pe-sieve/build/sig_finder/sig_finder/Debug/sig_finder.lib
-    ${CMAKE_SOURCE_DIR}/pe-sieve/build/paramkit_standalone/Debug/paramkit.lib
+    pe-sieve
     cjson
     rpcrt4
     psapi

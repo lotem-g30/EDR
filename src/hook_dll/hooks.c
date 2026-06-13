@@ -1,5 +1,6 @@
 #include "hooks.h"
 #include "detours.h"
+#include "argus/mem_utils.h"
 #include <stdio.h>
 
 // Owns the global event queue; initialized by DllMain via eq_init(&g_queue)
@@ -18,9 +19,7 @@ static LPVOID WINAPI Hook_VirtualAlloc(
 {
     LPVOID result = Real_VirtualAlloc(lpAddress, dwSize, flAllocationType, flProtect);
 
-    DWORD base_prot = flProtect & ~(PAGE_GUARD | PAGE_NOCACHE | PAGE_WRITECOMBINE);
-    if (base_prot & (PAGE_EXECUTE | PAGE_EXECUTE_READ |
-                     PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) {
+    if (argus_is_exec_protect(flProtect)) {
         char event[512];
         snprintf(event, sizeof(event),
             "{\"api\":\"VirtualAlloc\",\"pid\":%lu,\"target_pid\":%lu,"

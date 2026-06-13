@@ -62,8 +62,6 @@ bool ipc_client_connected(ArgusIpcClient* c) {
 
 static void write_line(ArgusIpcClient* c, const char* msg, size_t len) {
     if (c->pipe == INVALID_HANDLE_VALUE) return;
-    printf("[DEBUG] hook IPC: sending %zu bytes to pipe argus-events\n", len);
-    fflush(stdout);
     DWORD written;
     BOOL ok = WriteFile(c->pipe, msg, (DWORD)len, &written, NULL);
     if (!ok && GetLastError() == ERROR_BROKEN_PIPE) {

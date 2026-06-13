@@ -45,81 +45,50 @@
 
 int main(void)
 {
-    printf("============================================\n");
-    printf("  ArgusEDR Test Target — Trinity / EICAR\n");
-    printf("============================================\n");
-    printf("[target] PID = %lu\n", GetCurrentProcessId());
-    printf("\n");
-    printf("[target] Step 1: In another terminal, run:\n");
-    printf("           argus_agent.exe\n");
-    printf("[target] Step 2: In a third terminal, inject the hook DLL:\n");
-    printf("           injector.exe %lu argus_hook.dll\n", GetCurrentProcessId());
-    printf("\n");
-    printf("[target] Press ENTER after injection to trigger Trinity...\n");
+    DWORD pid = GetCurrentProcessId();
+    printf("\n  ArgusEDR  /  Trinity-EICAR test target\n");
+    printf("  ----------------------------------------\n");
+    printf("  PID    %lu\n", pid);
+    printf("  Inject injector.exe %lu argus_hook.dll\n\n", pid);
+    printf("  Press ENTER after injection...\n");
     getchar();
 
-    /* ── ALLOC: VirtualAllocEx (PAGE_READWRITE) ─────────────────────────── */
-    /* Deliberately RW-only so the FSM accumulates ALLOC and PROTECT as two  */
-    /* distinct events rather than collapsing them via an RWX allocation.     */
-    /* Hook fires → has_allocated = true → evaluate_state_and_severity → LOW */
-    printf("[target] Calling VirtualAllocEx (RW, 4096 bytes)...\n");
+    /* ── ALLOC ── */
     LPVOID mem = VirtualAllocEx(
         GetCurrentProcess(), NULL,
         4096, MEM_COMMIT | MEM_RESERVE,
         PAGE_READWRITE);
-
     if (!mem) {
-        fprintf(stderr, "[target] VirtualAllocEx FAILED: %lu\n", GetLastError());
+        fprintf(stderr, "  ERROR  VirtualAllocEx failed (%lu)\n", GetLastError());
         return 1;
     }
-    printf("[target] Allocated at %p\n", mem);
 
-    /* ── WRITE: WriteProcessMemory (EICAR string) ───────────────────────── */
-    /* EICAR is written at offset 0 of the allocation so the YARA fullword    */
-    /* match is satisfied: start-of-buffer counts as a word boundary.         */
-    /* Hook fires → has_written = true → MEDIUM                               */
-    printf("[target] Writing EICAR test payload via WriteProcessMemory...\n");
+    /* ── WRITE ── */
     const char* payload = EICAR_PAYLOAD;
     SIZE_T written = 0;
     BOOL wpm_ok = WriteProcessMemory(
         GetCurrentProcess(), mem,
         payload, strlen(payload) + 1,
         &written);
-
     if (!wpm_ok) {
-        fprintf(stderr, "[target] WriteProcessMemory FAILED: %lu\n", GetLastError());
+        fprintf(stderr, "  ERROR  WriteProcessMemory failed (%lu)\n", GetLastError());
         VirtualFree(mem, 0, MEM_RELEASE);
         return 1;
     }
-    printf("[target] Written %zu bytes to %p\n", written, mem);
 
-    /* ── PROTECT: VirtualProtect (PAGE_EXECUTE_READ) ────────────────────── */
-    /* exec-bit set → has_protected = true → HIGH (full Trinity assembled).   */
-    /* This also queues a fresh YARA scan that will find the EICAR payload    */
-    /* and fire Multi_EICAR_ac8f42d6 → has_yara = true → CRITICAL.           */
-    printf("[target] Calling VirtualProtect (PAGE_EXECUTE_READ)...\n");
+    /* ── PROTECT ── */
     DWORD old_protect = 0;
     BOOL vp_ok = VirtualProtect(mem, 4096, PAGE_EXECUTE_READ, &old_protect);
-
     if (!vp_ok) {
-        fprintf(stderr, "[target] VirtualProtect FAILED: %lu\n", GetLastError());
+        fprintf(stderr, "  ERROR  VirtualProtect failed (%lu)\n", GetLastError());
         VirtualFree(mem, 0, MEM_RELEASE);
         return 1;
     }
-    printf("[target] Protection changed 0x%lX → PAGE_EXECUTE_READ (0x20)\n",
-           (unsigned long)old_protect);
 
-    printf("\n");
-    printf("[target] Trinity complete. Check ArgusAgent output for:\n");
-    printf("           PROCESS_VERDICT severity:LOW\n");
-    printf("           PROCESS_VERDICT severity:MEDIUM\n");
-    printf("           PROCESS_VERDICT severity:HIGH\n");
-    printf("           PROCESS_VERDICT severity:CRITICAL  (YARA: Multi_EICAR_ac8f42d6)\n");
-    printf("\n");
-    printf("[target] Press ENTER to free memory and exit...\n");
+    printf("\n  Trinity complete  ->  LOW / MEDIUM / HIGH / CRITICAL\n\n");
+    printf("  Press ENTER to exit...\n");
     getchar();
 
     VirtualFree(mem, 0, MEM_RELEASE);
-    printf("[target] Cleaned up. Goodbye.\n");
     return 0;
 }

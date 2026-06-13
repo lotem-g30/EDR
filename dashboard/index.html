@@ -1,0 +1,1076 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Argus EDR — Live Dashboard</title>
+<style>
+/* ── Reset ─────────────────────────────────────────────────────────── */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#070b12; --bg2:#0c1220; --bg3:#101828;
+  --border:#1a2840; --border2:#223050;
+  --text:#c8dcf0; --text2:#5878a0; --text3:#3a5070;
+  --cyan:#00d4ff; --cyan2:#0099cc; --blue:#4488ff;
+  --green:#00e890;
+  --none:#3a5070; --low:#f0c030; --medium:#ff8c00; --high:#ff3c3c;
+  --critical:#ff00aa; --critical2:#cc0088;
+  --hook:#7b80ff; --yara:#00e890; --scan:#00aaff; --verdict:#ff3c3c;
+  --font:'Consolas','Courier New',monospace; --radius:6px; --radius2:10px;
+}
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--font);
+          font-size:13px;line-height:1.5;overflow:hidden}
+
+/* ── Layout ─────────────────────────────────────────────────────────── */
+#app{display:flex;flex-direction:column;height:100vh}
+
+/* Header */
+#header{display:flex;align-items:center;gap:16px;padding:10px 20px;
+  background:linear-gradient(90deg,#0a1020,#0c1428);
+  border-bottom:1px solid var(--border2);flex-shrink:0;position:relative;z-index:10}
+#logo{display:flex;align-items:center;gap:8px}
+#logo svg{width:28px;height:28px}
+#logo-text{font-size:18px;font-weight:700;letter-spacing:3px;color:var(--cyan);
+           text-shadow:0 0 12px rgba(0,212,255,.4)}
+#logo-sub{font-size:9px;color:var(--text2);letter-spacing:2px;margin-top:-2px}
+#header-session{margin-left:8px}
+#session-label{font-size:9px;color:var(--text2);letter-spacing:1px}
+#session-val{font-size:11px;color:var(--cyan);letter-spacing:1px}
+#status-pill{display:flex;align-items:center;gap:6px;padding:4px 12px;border-radius:20px;
+  background:#0a1a10;border:1px solid #1a4a30;font-size:11px;font-weight:600;
+  letter-spacing:1px;color:var(--green)}
+#status-dot{width:7px;height:7px;border-radius:50%;background:var(--green);
+            box-shadow:0 0 6px var(--green)}
+#status-pill.offline{color:var(--text2);border-color:#2a3040;background:#0c1018}
+#status-pill.offline #status-dot{background:var(--text2);box-shadow:none}
+#status-pill.starting{color:var(--low);border-color:#3a3010;background:#12100a}
+#status-pill.starting #status-dot{background:var(--low);box-shadow:0 0 6px var(--low);
+  animation:blink 1s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
+#uptime{font-size:12px;color:var(--text2);margin-left:auto}
+#uptime span{color:var(--text)}
+#btn-run{padding:7px 18px;border-radius:5px;border:1px solid var(--cyan2);
+  background:rgba(0,150,180,.15);color:var(--cyan);cursor:pointer;
+  font-family:var(--font);font-size:12px;font-weight:600;letter-spacing:1px;transition:all .2s}
+#btn-run:hover{background:rgba(0,180,220,.25);box-shadow:0 0 10px rgba(0,200,255,.2)}
+#btn-run:disabled{opacity:.4;cursor:not-allowed}
+
+/* Stats bar */
+#stats-bar{display:flex;gap:1px;background:var(--border);
+           border-bottom:1px solid var(--border2);flex-shrink:0}
+.stat-cell{flex:1;padding:8px 12px;background:var(--bg2);
+  display:flex;flex-direction:column;align-items:center;transition:background .3s}
+.stat-cell:hover{background:var(--bg3)}
+.stat-label{font-size:8px;color:var(--text2);letter-spacing:1px;text-transform:uppercase}
+.stat-value{font-size:22px;font-weight:700;line-height:1.1}
+.s-alloc{color:var(--hook)}.s-write{color:var(--medium)}.s-protect{color:var(--high)}
+.s-crt{color:var(--critical)}.s-yara{color:var(--green)}.s-verdict{color:var(--low)}
+.stat-value.bump{animation:bump .4s ease}
+@keyframes bump{0%{transform:scale(1.4)}100%{transform:scale(1)}}
+
+/* Demo stage rail */
+#stage-bar{display:flex;align-items:stretch;background:var(--bg2);
+  border-bottom:1px solid var(--border);flex-shrink:0;padding:0 16px;gap:0}
+.stage-step{display:flex;align-items:center;gap:6px;padding:7px 14px;
+  font-size:9px;letter-spacing:.8px;color:var(--text3);border-bottom:2px solid transparent;
+  transition:all .3s;white-space:nowrap}
+.stage-num{width:16px;height:16px;border-radius:50%;border:1px solid var(--border2);
+  display:flex;align-items:center;justify-content:center;font-size:8px;
+  background:var(--bg);color:var(--text3);flex-shrink:0;transition:all .3s}
+.stage-step.done .stage-num{background:var(--green);border-color:var(--green);
+  color:#000;box-shadow:0 0 6px rgba(0,232,144,.4)}
+.stage-step.done{color:var(--green);border-bottom-color:var(--green)}
+.stage-step.active .stage-num{background:var(--cyan2);border-color:var(--cyan);
+  color:#000;box-shadow:0 0 8px rgba(0,212,255,.5);animation:pulse-stage 1.2s infinite}
+.stage-step.active{color:var(--cyan);border-bottom-color:var(--cyan)}
+.stage-step.critical-hit .stage-num{background:var(--critical);border-color:var(--critical);
+  color:#fff;box-shadow:0 0 10px rgba(255,0,170,.7);animation:pulse-crit-stage 1s infinite}
+.stage-step.critical-hit{color:var(--critical);border-bottom-color:var(--critical)}
+@keyframes pulse-stage{0%,100%{box-shadow:0 0 6px rgba(0,212,255,.4)}
+                        50%{box-shadow:0 0 14px rgba(0,212,255,.8)}}
+@keyframes pulse-crit-stage{0%,100%{box-shadow:0 0 8px rgba(255,0,170,.5)}
+                             50%{box-shadow:0 0 18px rgba(255,0,170,.9)}}
+.stage-sep{color:var(--border2);font-size:10px;align-self:center;flex-shrink:0;
+  padding:0 2px;margin-top:2px}
+
+/* Main panels */
+#main{display:flex;flex:1;overflow:hidden}
+#panel-left{width:310px;min-width:280px;flex-shrink:0;display:flex;flex-direction:column;
+  border-right:1px solid var(--border);overflow:hidden}
+#panel-center{flex:1;display:flex;flex-direction:column;overflow:hidden;
+  border-right:1px solid var(--border)}
+#panel-right{width:320px;flex-shrink:0;display:flex;flex-direction:column;overflow:hidden}
+
+.panel-hdr{padding:8px 14px;font-size:9px;letter-spacing:2px;color:var(--text2);
+  background:var(--bg2);border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:8px;flex-shrink:0}
+.panel-hdr-icon{color:var(--cyan);font-size:11px}
+.panel-hdr-count{margin-left:auto;background:var(--bg3);color:var(--text2);
+  font-size:9px;padding:1px 7px;border-radius:10px;border:1px solid var(--border2)}
+
+/* Processes */
+#proc-list{flex:1;overflow-y:auto;padding:8px}
+.proc-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);
+  padding:10px 12px;margin-bottom:8px;transition:border-color .3s;
+  position:relative;overflow:hidden}
+.proc-card::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px}
+.proc-card.sev-none::before{background:var(--none)}
+.proc-card.sev-low::before{background:var(--low)}
+.proc-card.sev-medium::before{background:var(--medium)}
+.proc-card.sev-high::before{background:var(--high)}
+.proc-card.sev-critical::before{background:var(--critical);box-shadow:0 0 8px var(--critical)}
+.proc-card.sev-critical{border-color:rgba(255,0,170,.3);box-shadow:0 0 12px rgba(255,0,170,.1)}
+.proc-title{display:flex;align-items:center;gap:6px;margin-bottom:6px}
+.proc-name{font-size:12px;font-weight:600;color:var(--text)}
+.proc-pid{font-size:10px;color:var(--text2)}
+.sev-badge{margin-left:auto;font-size:8px;font-weight:700;letter-spacing:1px;
+  padding:2px 7px;border-radius:10px}
+.sev-none{background:#1a2030;color:var(--none)}
+.sev-low{background:#2a2010;color:var(--low)}
+.sev-medium{background:#2a1a00;color:var(--medium)}
+.sev-high{background:#2a0a0a;color:var(--high)}
+.sev-critical{background:#1a0018;color:var(--critical);
+  box-shadow:0 0 6px rgba(255,0,170,.3);animation:glow-crit 2s infinite}
+@keyframes glow-crit{0%,100%{box-shadow:0 0 6px rgba(255,0,170,.3)}
+                     50%{box-shadow:0 0 12px rgba(255,0,170,.6)}}
+.sev-rail{display:flex;align-items:center;gap:0;margin:6px 0}
+.sev-step{display:flex;align-items:center;flex:1}
+.sev-dot{width:10px;height:10px;border-radius:50%;border:1px solid var(--border2);
+  background:var(--bg);transition:all .4s;flex-shrink:0}
+.sev-dot.lit-low{background:var(--low);border-color:var(--low);box-shadow:0 0 5px var(--low)}
+.sev-dot.lit-medium{background:var(--medium);border-color:var(--medium);box-shadow:0 0 5px var(--medium)}
+.sev-dot.lit-high{background:var(--high);border-color:var(--high);box-shadow:0 0 5px var(--high)}
+.sev-dot.lit-critical{background:var(--critical);border-color:var(--critical);
+  box-shadow:0 0 8px var(--critical);animation:pulse-dot 1.5s infinite}
+@keyframes pulse-dot{0%,100%{transform:scale(1)}50%{transform:scale(1.4)}}
+.sev-line{flex:1;height:1px;background:var(--border2);transition:background .4s}
+.sev-line.active{background:var(--cyan2)}
+.sev-step-lbl{font-size:7px;color:var(--text3);text-align:center;margin-top:3px}
+.proc-meta{font-size:10px;color:var(--text2);margin-top:4px}
+.proc-meta span{color:var(--text)}
+.yara-pill{display:inline-block;margin-top:4px;background:rgba(0,232,144,.1);
+  border:1px solid rgba(0,232,144,.3);color:var(--green);font-size:8px;padding:1px 7px;
+  border-radius:10px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* Verdicts */
+#verdict-list{max-height:200px;overflow-y:auto;padding:6px 8px}
+.verdict-item{display:flex;align-items:center;gap:8px;padding:5px 8px;margin-bottom:3px;
+  background:var(--bg2);border-radius:4px;border-left:2px solid var(--border2);
+  animation:slide-in .3s ease}
+@keyframes slide-in{from{opacity:0;transform:translateX(-10px)}to{opacity:1;transform:none}}
+.verdict-sev{font-size:9px;font-weight:700;letter-spacing:1px;min-width:60px}
+.verdict-pid{font-size:9px;color:var(--text2)}
+.verdict-trigger{font-size:9px;color:var(--text2);flex:1;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.v-low{color:var(--low);border-color:var(--low)}
+.v-medium{color:var(--medium);border-color:var(--medium)}
+.v-high{color:var(--high);border-color:var(--high)}
+.v-critical{color:var(--critical);border-color:var(--critical)}
+
+/* Event feed */
+#filter-bar{display:flex;gap:4px;padding:6px 10px;background:var(--bg2);
+  border-bottom:1px solid var(--border);flex-shrink:0}
+.filter-chip{font-size:9px;padding:2px 10px;border-radius:10px;cursor:pointer;
+  border:1px solid var(--border2);background:transparent;color:var(--text2);
+  font-family:var(--font);letter-spacing:.5px;transition:all .15s}
+.filter-chip.active{background:rgba(0,150,200,.2);border-color:var(--cyan2);color:var(--cyan)}
+.filter-chip:hover{border-color:var(--text2);color:var(--text)}
+#event-feed{flex:1;overflow-y:auto;padding:4px}
+.ev{display:flex;align-items:flex-start;gap:7px;padding:4px 7px;border-radius:4px;
+  border-bottom:1px solid rgba(26,40,64,.5);animation:fade-in .25s ease;font-size:11px}
+@keyframes fade-in{from{opacity:0}to{opacity:1}}
+.ev:hover{background:rgba(255,255,255,.03)}
+.ev-ts{color:var(--text3);white-space:nowrap;font-size:10px;padding-top:1px;min-width:56px}
+.ev-tag{font-size:8px;font-weight:700;letter-spacing:.5px;padding:1px 6px;border-radius:3px;
+  white-space:nowrap;flex-shrink:0;align-self:center}
+.ev-body{flex:1;color:var(--text);line-height:1.4}
+.ev-body .dim{color:var(--text2)}.ev-body .hi{color:var(--cyan)}
+.tag-alloc{background:rgba(123,128,255,.15);color:var(--hook);border:1px solid rgba(123,128,255,.3)}
+.tag-write{background:rgba(255,140,0,.12);color:var(--medium);border:1px solid rgba(255,140,0,.3)}
+.tag-protect{background:rgba(255,60,60,.12);color:var(--high);border:1px solid rgba(255,60,60,.3)}
+.tag-crt{background:rgba(255,0,170,.12);color:var(--critical);border:1px solid rgba(255,0,170,.3)}
+.tag-yara{background:rgba(0,232,144,.12);color:var(--green);border:1px solid rgba(0,232,144,.3)}
+.tag-scan{background:rgba(0,170,255,.1);color:var(--scan);border:1px solid rgba(0,170,255,.2)}
+.tag-verdict{background:rgba(255,60,60,.08);color:var(--high);border:1px solid rgba(255,60,60,.2)}
+.tag-agent{background:rgba(0,212,255,.08);color:var(--cyan);border:1px solid rgba(0,212,255,.2)}
+.tag-log{background:transparent;color:var(--text3);border:1px solid var(--border)}
+.tag-inject{background:rgba(255,200,0,.1);color:var(--low);border:1px solid rgba(255,200,0,.2)}
+.tag-raw{background:rgba(58,80,112,.2);color:var(--text2);border:1px solid var(--border)}
+.ev-dedup{font-size:8px;color:var(--text2);background:var(--bg3);border:1px solid var(--border2);
+  border-radius:8px;padding:1px 5px;margin-left:4px;flex-shrink:0;align-self:center}
+
+/* Right panel */
+#timeline-area{flex:1;overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:10px}
+.timeline-card{background:var(--bg2);border:1px solid var(--border);
+  border-radius:var(--radius);padding:10px 12px}
+.timeline-title{font-size:9px;color:var(--text2);letter-spacing:1px;margin-bottom:8px}
+.timeline-pid{color:var(--cyan);font-size:10px}
+.attack-chain{display:flex;align-items:center;margin:8px 0}
+.chain-step{display:flex;flex-direction:column;align-items:center;flex:1}
+.chain-node{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;
+  justify-content:center;font-size:10px;font-weight:700;border:2px solid var(--border2);
+  background:var(--bg);color:var(--text3);transition:all .5s;position:relative}
+.chain-node.active-low{border-color:var(--low);color:var(--low);
+  background:rgba(240,192,48,.1);box-shadow:0 0 8px rgba(240,192,48,.4)}
+.chain-node.active-medium{border-color:var(--medium);color:var(--medium);
+  background:rgba(255,140,0,.1);box-shadow:0 0 8px rgba(255,140,0,.4)}
+.chain-node.active-high{border-color:var(--high);color:var(--high);
+  background:rgba(255,60,60,.1);box-shadow:0 0 8px rgba(255,60,60,.4)}
+.chain-node.active-critical{border-color:var(--critical);color:var(--critical);
+  background:rgba(255,0,170,.1);box-shadow:0 0 12px rgba(255,0,170,.6);
+  animation:pulse-node 1.5s infinite}
+@keyframes pulse-node{0%,100%{box-shadow:0 0 8px rgba(255,0,170,.5)}
+                      50%{box-shadow:0 0 20px rgba(255,0,170,.9)}}
+.chain-connector{flex:1;height:2px;background:var(--border2);transition:background .5s}
+.chain-connector.lit{background:var(--cyan2)}
+.chain-label{font-size:7px;color:var(--text3);margin-top:3px;text-align:center}
+.chain-label.active{color:var(--text2)}
+.finding-item{display:flex;align-items:center;gap:6px;font-size:10px;padding:4px 0;
+  border-bottom:1px solid rgba(26,40,64,.5)}
+.finding-type{font-size:8px;padding:1px 6px;border-radius:3px;flex-shrink:0}
+.ft-private{background:rgba(255,60,60,.12);color:var(--high);border:1px solid rgba(255,60,60,.2)}
+.ft-yara{background:rgba(0,232,144,.12);color:var(--green);border:1px solid rgba(0,232,144,.2)}
+.ft-pe{background:rgba(0,170,255,.1);color:var(--scan);border:1px solid rgba(0,170,255,.2)}
+.finding-addr{color:var(--cyan2);font-size:9px}
+.finding-detail{color:var(--text2);font-size:9px;flex:1;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;
+  flex:1;gap:8px;color:var(--text3);font-size:11px;padding:30px}
+.empty-icon{font-size:32px;opacity:.3}
+
+/* Toast */
+#toast-area{position:fixed;bottom:20px;right:20px;z-index:100;
+  display:flex;flex-direction:column-reverse;gap:8px}
+.toast{padding:8px 16px;border-radius:6px;font-size:11px;max-width:320px;
+  animation:toast-in .3s ease,toast-out .3s ease 3.7s forwards;
+  box-shadow:0 4px 20px rgba(0,0,0,.5)}
+@keyframes toast-in{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+@keyframes toast-out{to{opacity:0;transform:translateY(-5px)}}
+.toast-info{background:#0c2040;border:1px solid var(--blue);color:var(--cyan)}
+.toast-success{background:#0a2010;border:1px solid var(--green);color:var(--green)}
+.toast-warning{background:#201800;border:1px solid var(--low);color:var(--low)}
+.toast-critical{background:#200018;border:1px solid var(--critical);color:var(--critical);
+  box-shadow:0 0 20px rgba(255,0,170,.3)}
+.toast-error{background:#201010;border:1px solid var(--high);color:var(--high)}
+
+/* Scrollbars */
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px}
+::-webkit-scrollbar-thumb:hover{background:var(--text3)}
+.pulse-in{animation:pulse-bg .5s ease}
+@keyframes pulse-bg{0%{background:rgba(0,180,220,.08)}100%{background:transparent}}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- Header -->
+  <div id="header">
+    <div id="logo">
+      <svg viewBox="0 0 32 32" fill="none">
+        <polygon points="16,2 30,10 30,22 16,30 2,22 2,10"
+          fill="rgba(0,180,220,.1)" stroke="#00d4ff" stroke-width="1.5"/>
+        <polygon points="16,7 25,12 25,20 16,25 7,20 7,12"
+          fill="rgba(0,180,220,.08)" stroke="#0099cc" stroke-width="1"/>
+        <circle cx="16" cy="16" r="4" fill="rgba(0,212,255,.6)"/>
+        <line x1="16" y1="2"  x2="16" y2="7"  stroke="#00d4ff" stroke-width="1.5"/>
+        <line x1="30" y1="10" x2="25" y2="12" stroke="#00d4ff" stroke-width="1.5"/>
+        <line x1="30" y1="22" x2="25" y2="20" stroke="#00d4ff" stroke-width="1.5"/>
+        <line x1="16" y1="30" x2="16" y2="25" stroke="#00d4ff" stroke-width="1.5"/>
+        <line x1="2"  y1="22" x2="7"  y2="20" stroke="#00d4ff" stroke-width="1.5"/>
+        <line x1="2"  y1="10" x2="7"  y2="12" stroke="#00d4ff" stroke-width="1.5"/>
+      </svg>
+      <div>
+        <div id="logo-text">ARGUS EDR</div>
+        <div id="logo-sub">ENDPOINT DETECTION &amp; RESPONSE</div>
+      </div>
+    </div>
+    <div id="header-session">
+      <div id="session-label">SESSION ID</div>
+      <div id="session-val">─ waiting ─</div>
+    </div>
+    <div id="status-pill" class="offline">
+      <div id="status-dot"></div>
+      <span id="status-text">OFFLINE</span>
+    </div>
+    <div id="uptime">UPTIME <span id="uptime-val">00:00:00</span></div>
+    <button id="btn-run" onclick="runDemo()">▶ RUN DEMO</button>
+  </div>
+
+  <!-- Stats bar -->
+  <div id="stats-bar">
+    <div class="stat-cell" title="VirtualAllocEx intercepts">
+      <div class="stat-label">ALLOC</div>
+      <div class="stat-value s-alloc" id="s-alloc">0</div>
+    </div>
+    <div class="stat-cell" title="WriteProcessMemory intercepts">
+      <div class="stat-label">WRITE MEM</div>
+      <div class="stat-value s-write" id="s-write">0</div>
+    </div>
+    <div class="stat-cell" title="VirtualProtect intercepts">
+      <div class="stat-label">PROTECT</div>
+      <div class="stat-value s-protect" id="s-protect">0</div>
+    </div>
+    <div class="stat-cell" title="CreateRemoteThread intercepts">
+      <div class="stat-label">REMOTE THREAD</div>
+      <div class="stat-value s-crt" id="s-crt">0</div>
+    </div>
+    <div class="stat-cell" title="YARA matches in memory">
+      <div class="stat-label">YARA MATCHES</div>
+      <div class="stat-value s-yara" id="s-yara">0</div>
+    </div>
+    <div class="stat-cell" title="Highest severity reached">
+      <div class="stat-label">WORST VERDICT</div>
+      <div class="stat-value s-verdict" id="s-verdict" style="font-size:14px;padding-top:5px">NONE</div>
+    </div>
+  </div>
+
+  <!-- Demo stage rail -->
+  <div id="stage-bar">
+    <div class="stage-step" id="st-1">
+      <div class="stage-num">1</div>AGENT STARTED
+    </div>
+    <div class="stage-sep">›</div>
+    <div class="stage-step" id="st-2">
+      <div class="stage-num">2</div>TARGET STARTED
+    </div>
+    <div class="stage-sep">›</div>
+    <div class="stage-step" id="st-3">
+      <div class="stage-num">3</div>HOOK INJECTED
+    </div>
+    <div class="stage-sep">›</div>
+    <div class="stage-step" id="st-4">
+      <div class="stage-num">4</div>PESIEVE INJECTED
+    </div>
+    <div class="stage-sep">›</div>
+    <div class="stage-step" id="st-5">
+      <div class="stage-num">5</div>TRINITY ACTIVE
+    </div>
+    <div class="stage-sep">›</div>
+    <div class="stage-step" id="st-6">
+      <div class="stage-num">6</div>CRITICAL
+    </div>
+  </div>
+
+  <!-- Main -->
+  <div id="main">
+
+    <!-- Left: Processes + Verdicts -->
+    <div id="panel-left">
+      <div class="panel-hdr">
+        <span class="panel-hdr-icon">◈</span> MONITORED PROCESSES
+        <span class="panel-hdr-count" id="proc-count">0</span>
+      </div>
+      <div id="proc-list">
+        <div class="empty-state">
+          <div class="empty-icon">◉</div>
+          <div>No processes tracked yet</div>
+          <div style="color:var(--text3);font-size:10px">Click RUN DEMO to begin</div>
+        </div>
+      </div>
+      <div class="panel-hdr" style="border-top:1px solid var(--border)">
+        <span class="panel-hdr-icon">⚑</span> VERDICTS
+        <span class="panel-hdr-count" id="verdict-count">0</span>
+      </div>
+      <div id="verdict-list"></div>
+    </div>
+
+    <!-- Center: Event feed -->
+    <div id="panel-center">
+      <div class="panel-hdr">
+        <span class="panel-hdr-icon">▶</span> LIVE EVENT STREAM
+        <span class="panel-hdr-count" id="event-count">0</span>
+      </div>
+      <div id="filter-bar">
+        <button class="filter-chip active" data-filter="all"     onclick="setFilter('all')">ALL</button>
+        <button class="filter-chip"        data-filter="hook"    onclick="setFilter('hook')">HOOKS</button>
+        <button class="filter-chip"        data-filter="verdict" onclick="setFilter('verdict')">VERDICTS</button>
+        <button class="filter-chip"        data-filter="scan"    onclick="setFilter('scan')">SCANS</button>
+        <button class="filter-chip"        data-filter="yara"    onclick="setFilter('yara')">YARA</button>
+        <button class="filter-chip"        data-filter="raw"     onclick="setFilter('raw')">RAW LOG</button>
+      </div>
+      <div id="event-feed"></div>
+    </div>
+
+    <!-- Right: Attack progression -->
+    <div id="panel-right">
+      <div class="panel-hdr">
+        <span class="panel-hdr-icon">◎</span> ATTACK PROGRESSION
+      </div>
+      <div id="timeline-area">
+        <div class="empty-state" id="timeline-empty">
+          <div class="empty-icon">◌</div>
+          <div>Waiting for hook events</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+<div id="toast-area"></div>
+
+<script>
+// ── Constants ────────────────────────────────────────────────────────
+const SEV_ORDER = ['NONE','LOW','MEDIUM','HIGH','CRITICAL'];
+const SEV_COLOR = {NONE:'var(--none)',LOW:'var(--low)',MEDIUM:'var(--medium)',
+                   HIGH:'var(--high)',CRITICAL:'var(--critical)'};
+const API_TAG = {
+  VirtualAllocEx:'tag-alloc', WriteProcessMemory:'tag-write',
+  VirtualProtect:'tag-protect', CreateRemoteThread:'tag-crt',
+};
+
+// ── State ────────────────────────────────────────────────────────────
+let state        = {agent_running:false,session_id:null,stats:{},processes:{},verdicts:[],findings:[]};
+let allEvents    = [];
+let activeFilter = 'all';
+let worstVerdict = 'NONE';
+let ws           = null;
+let uptimeBase   = 0;
+let uptimeTimer  = null;
+let expectedGen  = 0;   // events from older generations are discarded
+let demoStage    = 0;   // current stage 0-6
+
+// ── WebSocket ────────────────────────────────────────────────────────
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onopen  = () => {};
+  ws.onclose = () => { setStatus('offline'); setTimeout(connect, 3000); };
+  ws.onerror = () => { setStatus('offline'); };
+  ws.onmessage = e => handleMessage(JSON.parse(e.data));
+}
+
+function handleMessage(msg) {
+  switch (msg.type) {
+
+    case 'STATE_SNAPSHOT':
+      state = msg.state;
+      uptimeBase = msg.uptime;
+      startUptimeClock(uptimeBase);
+      renderFull();
+      break;
+
+    case 'STATE_RESET': {
+      // Advance the generation so any queued stale PARSED_EVENTs are ignored
+      expectedGen = msg.gen || (expectedGen + 1);
+      demoStage   = 0;
+      resetAllUI();
+      break;
+    }
+
+    case 'HEARTBEAT':
+      setStatus(msg.agent_running ? 'online' : 'offline');
+      break;
+
+    case 'AGENT_STATUS':
+      if (msg.running) {
+        setStatus('starting');
+        toast(`Agent started (PID ${msg.pid})`, 'success');
+      } else {
+        setStatus('offline');
+      }
+      break;
+
+    case 'PARSED_EVENT':
+      // Drop stale events from previous demo runs
+      if (typeof msg.gen === 'number' && msg.gen < expectedGen) break;
+      handleParsedEvent(msg.ts, msg.parsed, msg.raw);
+      break;
+
+    case 'DEMO_STAGE':
+      advanceStage(msg.stage);
+      break;
+
+    case 'TEST_STARTED':
+      toast(`test_target.exe started — PID ${msg.pid}`, 'info');
+      addFeedEvent(msg.ts, 'DEMO',
+        `test_target.exe launched — PID <span class="hi">${msg.pid}</span>`,
+        'tag-inject', 'demo');
+      break;
+
+    case 'INJECT_RESULT':
+      if (msg.success) {
+        toast(`argus_hook.dll injected → PID ${msg.pid}`, 'success');
+        addFeedEvent(msg.ts, 'INJECT',
+          `argus_hook.dll injected → PID <span class="hi">${msg.pid}</span>`,
+          'tag-inject', 'demo');
+        advanceStage(3);
+      } else {
+        toast('Injection failed — run as Administrator', 'error');
+        addFeedEvent(msg.ts, 'INJECT', 'Injection FAILED (needs admin)', 'tag-log', 'demo');
+        document.getElementById('btn-run').disabled = false;
+      }
+      break;
+
+    case 'PESIEVE_INJECT_RESULT':
+      if (msg.success) {
+        toast(`argus_pesieve.dll injected → PID ${msg.pid}`, 'success');
+        addFeedEvent(msg.ts, 'PESIEVE',
+          `argus_pesieve.dll injected → PID <span class="hi">${msg.pid}</span>`,
+          'tag-scan', 'demo');
+        advanceStage(4);
+      } else {
+        addFeedEvent(msg.ts, 'PESIEVE', 'PE-Sieve DLL injection failed (non-critical)', 'tag-log', 'demo');
+      }
+      break;
+
+    case 'TEST_TRINITY_START':
+      toast('Trinity sequence triggered', 'info');
+      addFeedEvent(msg.ts, 'DEMO',
+        `Trinity executing on PID <span class="hi">${msg.pid}</span>…`,
+        'tag-inject', 'demo');
+      advanceStage(5);
+      break;
+
+    case 'TEST_COMPLETE':
+      toast('Demo complete — check verdicts panel', 'success');
+      addFeedEvent(msg.ts, 'DEMO',
+        `Test sequence finished (PID ${msg.pid})`, 'tag-inject', 'demo');
+      document.getElementById('btn-run').disabled = false;
+      break;
+
+    case 'ERROR':
+      toast(msg.text, 'error');
+      addFeedEvent(now_ts(), 'ERR', escapeHtml(msg.text), 'tag-log', 'demo');
+      document.getElementById('btn-run').disabled = false;
+      break;
+  }
+}
+
+// ── Parsed event handler ─────────────────────────────────────────────
+function handleParsedEvent(ts, p, raw) {
+  const t = p.type;
+
+  if (t === 'SESSION_ID') {
+    state.session_id = p.session_id;
+    const el = document.getElementById('session-val');
+    el.textContent = p.session_id;
+    el.title = p.session_id;
+  }
+  else if (t === 'AGENT_START') {
+    addFeedEvent(ts, 'AGENT', 'ArgusEDR Agent started — compiling YARA rules', 'tag-agent', 'agent');
+    setStatus('starting');
+    advanceStage(1);
+  }
+  else if (t === 'AGENT_READY') {
+    addFeedEvent(ts, 'AGENT', 'Agent ready — inject hook DLLs to begin monitoring', 'tag-agent', 'agent');
+  }
+  else if (t === 'YARA_INIT') {
+    addFeedEvent(ts, 'YARA', `${p.rule_count} rule file(s) compiled OK`, 'tag-yara', 'agent');
+  }
+  else if (t === 'IPC_READY') {
+    addFeedEvent(ts, 'AGENT', 'Named pipe ready: \\\\\\\\. \\\\pipe\\\\argus-events', 'tag-agent', 'agent');
+    setStatus('online');
+  }
+  else if (t === 'PESIEVE_READY') {
+    addFeedEvent(ts, 'AGENT', 'Named pipe ready: \\\\\\\\. \\\\pipe\\\\argus-pesieve', 'tag-agent', 'agent');
+  }
+  else if (t === 'CLIENT_CONNECTED') {
+    addFeedEvent(ts, 'AGENT', 'argus_hook.dll connected via named pipe — API hooks active', 'tag-agent', 'agent');
+    toast('Hook DLL connected to agent', 'success');
+  }
+  else if (t === 'CLIENT_PESIEVE_CONNECTED') {
+    addFeedEvent(ts, 'PESIEVE', 'argus_pesieve.dll connected via named pipe — memory scan active', 'tag-scan', 'agent');
+    toast('PE-Sieve DLL connected to agent', 'info');
+    advanceStage(4);
+  }
+  else if (t === 'HOOK_EVENT') {
+    const ev  = p.event;
+    const api = ev.api || '';
+    const pid = String(ev.target_pid || ev.pid || '?');
+    if (api === 'VirtualAllocEx')     bump('s-alloc');
+    if (api === 'WriteProcessMemory') bump('s-write');
+    if (api === 'VirtualProtect')     bump('s-protect');
+    if (api === 'CreateRemoteThread') bump('s-crt');
+    ensureProcess(pid);
+    state.processes[pid].events.push(api);
+    renderProcessCard(pid);
+    const tagCls = API_TAG[api] || 'tag-log';
+    let detail = `<span class="hi">${api}</span> pid=${pid}`;
+    if (ev.address) detail += ` addr=<span class="dim">${ev.address}</span>`;
+    if (ev.size)    detail += ` size=${ev.size}`;
+    if (ev.protect) detail += ` prot=<span class="dim">0x${Number(ev.protect).toString(16).toUpperCase()}</span>`;
+    const shortApi = api.replace('ProcessMemory','ProcMem').replace('Virtual','V');
+    const hookKey  = ev.address ? `hook:${pid}:${api}:${ev.address}` : undefined;
+    addFeedEvent(ts, shortApi, detail, tagCls, 'hook', pid, hookKey);
+    advanceStage(5);
+  }
+  else if (t === 'PROCESS_VERDICT') {
+    const v   = p.verdict;
+    const sev = (v.severity || '').toUpperCase();
+    const pid = String(v.pid || '?');
+    state.verdicts.push(v);
+    ensureProcess(pid);
+    state.processes[pid].severity = sev;
+    state.processes[pid].verdicts.push(sev);
+    renderProcessCard(pid);
+    renderVerdicts();
+    updateWorstVerdict(sev);
+    bump('s-verdict', sev);
+    const sc = 'v-' + sev.toLowerCase();
+    addFeedEvent(ts, 'VERDICT',
+      `<span class="${sc} sev-badge" style="font-size:10px;padding:1px 6px">${sev}</span> `+
+      `pid=${pid} <span class="dim">${escapeHtml(v.trigger||'')}</span>`,
+      'tag-verdict', 'verdict', pid, `verdict:${pid}:${sev}`);
+    if (sev === 'CRITICAL') {
+      toast(`CRITICAL — ${v.trigger||'process flagged'}`, 'critical');
+      advanceStage(6);
+    } else if (sev === 'HIGH') {
+      toast(`HIGH severity — ${v.trigger||''}`, 'warning');
+    }
+    updateTimelineCard(pid);
+  }
+  else if (t === 'SCAN_FINDING') {
+    const f   = p.finding;
+    const pid = String(f.pid || '?');
+    const ft  = f.finding_type || '';
+    state.findings.push(f);
+    ensureProcess(pid);
+    if (f.process_name) state.processes[pid].name = f.process_name;
+    state.processes[pid].findings = (state.processes[pid].findings || 0) + 1;
+    if (ft === 'FINDING_YARA_MATCH') {
+      bump('s-yara');
+      const rule = (f.detail || {}).yara_rule || '';
+      if (rule && !state.processes[pid].yara_rules.includes(rule))
+        state.processes[pid].yara_rules.push(rule);
+      addFeedEvent(ts, 'YARA',
+        `Rule <span class="hi">${escapeHtml(rule)}</span> matched in pid=${pid}`,
+        'tag-yara', 'yara', pid, `yara:${pid}:${rule}`);
+    } else {
+      const addr = (f.region||{}).base_address || '';
+      addFeedEvent(ts, 'SCAN',
+        `${shortFT(ft)} pid=${pid} <span class="dim">${escapeHtml(addr)}</span>`,
+        'tag-scan', 'scan', pid, `scan_finding:${pid}:${ft}:${addr}`);
+    }
+    renderProcessCard(pid);
+    updateTimelineCard(pid);
+    advanceStage(5);
+  }
+  else if (t === 'SCAN_TRIGGERED') {
+    const pid = String(p.pid || '?');
+    ensureProcess(pid);
+    state.processes[pid].scans = (state.processes[pid].scans || 0) + 1;
+    addFeedEvent(ts, 'SCAN',
+      `PE-Sieve / YARA scan queued for pid=${pid}`, 'tag-scan', 'scan', pid, `scan_trigger:${pid}`);
+  }
+  else if (t === 'SCAN_COMPLETE') {
+    const pid = String(p.pid || '?');
+    addFeedEvent(ts, 'SCAN', `pid=${pid} → ${p.count} finding(s)`, 'tag-scan', 'scan', pid, `scan_complete:${pid}`);
+  }
+  else if (t === 'LOG') {
+    // Raw agent log lines — visible in RAW LOG filter
+    addFeedEvent(ts, 'LOG', escapeHtml(p.text || ''), 'tag-raw', 'raw');
+  }
+}
+
+// ── Process helpers ──────────────────────────────────────────────────
+function ensureProcess(pid) {
+  if (!state.processes[pid]) {
+    state.processes[pid] = {pid, name:'unknown', severity:'NONE',
+      events:[], verdicts:[], yara_rules:[], scans:0, findings:0};
+    const el = document.getElementById('proc-list');
+    const empty = el.querySelector('.empty-state');
+    if (empty) el.removeChild(empty);
+    updateTimelineEmpty();
+  }
+  return state.processes[pid];
+}
+
+function renderFull() {
+  const procList = document.getElementById('proc-list');
+  procList.innerHTML = '';
+  const pids = Object.keys(state.processes || {});
+  if (pids.length === 0) {
+    procList.innerHTML = `<div class="empty-state"><div class="empty-icon">◉</div>
+      <div>No processes tracked yet</div>
+      <div style="color:var(--text3);font-size:10px">Click RUN DEMO to begin</div></div>`;
+  } else {
+    pids.forEach(renderProcessCard);
+  }
+  renderVerdicts();
+  updateStats();
+  if (state.session_id) document.getElementById('session-val').textContent = state.session_id;
+  setStatus(state.agent_running ? 'online' : 'offline');
+  updateTimelineEmpty();
+  pids.forEach(updateTimelineCard);
+}
+
+function renderProcessCard(pid) {
+  const proc = state.processes[pid];
+  if (!proc) return;
+  const sev = proc.severity || 'NONE';
+  const sevIdx = SEV_ORDER.indexOf(sev);
+  const litLow  = sevIdx >= 1, litMed = sevIdx >= 2;
+  const litHi   = sevIdx >= 3, litCrit = sevIdx >= 4;
+
+  const html = `
+    <div class="proc-title">
+      <div class="proc-name">${escapeHtml(proc.name === 'unknown' ? 'pid '+pid : proc.name)}</div>
+      <div class="proc-pid">PID ${pid}</div>
+      <div class="sev-badge sev-${sev.toLowerCase()}">${sev}</div>
+    </div>
+    <div class="sev-rail">
+      <div class="sev-step">
+        <div class="sev-dot ${litLow?'lit-low':''}"></div>
+        <div class="sev-step-lbl ${litLow?'active':''}">LOW</div>
+      </div>
+      <div class="sev-line ${litMed?'active':''}"></div>
+      <div class="sev-step">
+        <div class="sev-dot ${litMed?'lit-medium':''}"></div>
+        <div class="sev-step-lbl ${litMed?'active':''}">MED</div>
+      </div>
+      <div class="sev-line ${litHi?'active':''}"></div>
+      <div class="sev-step">
+        <div class="sev-dot ${litHi?'lit-high':''}"></div>
+        <div class="sev-step-lbl ${litHi?'active':''}">HIGH</div>
+      </div>
+      <div class="sev-line ${litCrit?'active':''}"></div>
+      <div class="sev-step">
+        <div class="sev-dot ${litCrit?'lit-critical':''}"></div>
+        <div class="sev-step-lbl ${litCrit?'active':''}">CRIT</div>
+      </div>
+    </div>
+    <div class="proc-meta">
+      Hooks: <span>${proc.events.length}</span> &nbsp;
+      Scans: <span>${proc.scans||0}</span> &nbsp;
+      Finds: <span>${proc.findings||0}</span>
+    </div>
+    ${(proc.yara_rules||[]).map(r =>
+      `<div class="yara-pill" title="${escapeHtml(r)}">⚡ ${escapeHtml(r)}</div>`).join('')}
+  `;
+
+  let card = document.getElementById('proc-' + pid);
+  if (!card) {
+    card = document.createElement('div');
+    card.id = 'proc-' + pid;
+    document.getElementById('proc-list').appendChild(card);
+  }
+  card.className = `proc-card sev-${sev.toLowerCase()} pulse-in`;
+  setTimeout(() => card.classList.remove('pulse-in'), 600);
+  card.innerHTML = html;
+  document.getElementById('proc-count').textContent = Object.keys(state.processes).length;
+}
+
+function dedupeFindings(findings) {
+  const seen = new Set();
+  return findings.filter(f => {
+    const addr = (f.region||{}).base_address || '';
+    const rule = (f.detail||{}).yara_rule    || '';
+    const key  = `${f.pid}|${f.finding_type}|${addr}|${rule}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function updateTimelineCard(pid) {
+  const proc = state.processes[pid];
+  if (!proc) return;
+  const evs      = proc.events || [];
+  const hasAlloc = evs.includes('VirtualAllocEx');
+  const hasWrite = evs.includes('WriteProcessMemory');
+  const hasProt  = evs.includes('VirtualProtect');
+  const hasCRT   = evs.includes('CreateRemoteThread');
+  const hasYara  = (proc.yara_rules||[]).length > 0;
+  const findings = dedupeFindings((state.findings||[]).filter(f => String(f.pid) === String(pid)));
+
+  const html = `
+    <div class="timeline-title">
+      PROCESS: <span class="timeline-pid">${escapeHtml(proc.name !== 'unknown' ? proc.name : 'pid '+pid)}</span>
+      &nbsp;·&nbsp; PID ${pid}
+    </div>
+    <div class="attack-chain">
+      <div class="chain-step">
+        <div class="chain-node ${hasAlloc?'active-low':''}">A</div>
+        <div class="chain-label ${hasAlloc?'active':''}">ALLOC</div>
+      </div>
+      <div class="chain-connector ${hasWrite?'lit':''}"></div>
+      <div class="chain-step">
+        <div class="chain-node ${hasWrite?'active-medium':''}">W</div>
+        <div class="chain-label ${hasWrite?'active':''}">WRITE</div>
+      </div>
+      <div class="chain-connector ${hasProt||hasCRT?'lit':''}"></div>
+      <div class="chain-step">
+        <div class="chain-node ${hasProt?'active-high':(hasCRT?'active-critical':'')}">P</div>
+        <div class="chain-label ${hasProt?'active':''}">PROT</div>
+      </div>
+      <div class="chain-connector ${hasYara||hasCRT?'lit':''}"></div>
+      <div class="chain-step">
+        <div class="chain-node ${hasYara||hasCRT?'active-critical':''}">!</div>
+        <div class="chain-label ${hasYara||hasCRT?'active':''}">DETECT</div>
+      </div>
+    </div>
+    ${findings.length > 0 ? `
+      <div class="timeline-title" style="margin-top:8px">
+        SCAN FINDINGS (${findings.length})
+      </div>
+      ${findings.slice(-6).map(f => `
+        <div class="finding-item">
+          <span class="finding-type ${ftCls(f.finding_type)}">${shortFT(f.finding_type)}</span>
+          <span class="finding-addr">${escapeHtml(((f.region||{}).base_address||'').slice(0,14))}</span>
+          <span class="finding-detail">${escapeHtml((f.detail||{}).yara_rule||(f.detail||{}).reason||f.finding_type||'')}</span>
+        </div>`).join('')}
+    ` : ''}
+  `;
+
+  let card = document.getElementById('tc-' + pid);
+  if (!card) {
+    card = document.createElement('div');
+    card.id = 'tc-' + pid;
+    card.className = 'timeline-card';
+    document.getElementById('timeline-area').appendChild(card);
+  }
+  card.innerHTML = html;
+}
+
+function updateTimelineEmpty() {
+  const empty = document.getElementById('timeline-empty');
+  if (empty) empty.style.display = Object.keys(state.processes).length ? 'none' : 'flex';
+}
+
+// ── Verdicts ─────────────────────────────────────────────────────────
+function renderVerdicts() {
+  const el = document.getElementById('verdict-list');
+  el.innerHTML = '';
+  (state.verdicts||[]).slice(-20).reverse().forEach(v => {
+    const sev = (v.severity||'').toLowerCase();
+    const div = document.createElement('div');
+    div.className = 'verdict-item';
+    div.innerHTML = `
+      <span class="verdict-sev v-${sev}">${v.severity}</span>
+      <span class="verdict-pid">PID ${v.pid}</span>
+      <span class="verdict-trigger">${escapeHtml(v.trigger||'')}</span>`;
+    el.appendChild(div);
+  });
+  document.getElementById('verdict-count').textContent = (state.verdicts||[]).length;
+}
+
+// ── Event feed ───────────────────────────────────────────────────────
+let eventCount    = 0;
+let feedDedupeMap = {};  // dedupeKey → event object; reset on each demo
+
+function addFeedEvent(ts, tag, bodyHtml, tagCls, filterKey, pid, dedupeKey) {
+  if (dedupeKey && Object.prototype.hasOwnProperty.call(feedDedupeMap, dedupeKey)) {
+    const existing = feedDedupeMap[dedupeKey];
+    existing.count++;
+    const badge = document.getElementById('dedup-cnt-' + existing.id);
+    if (badge) { badge.textContent = `×${existing.count}`; badge.style.display = ''; }
+    return;
+  }
+  const id = eventCount;
+  const ev = {id, ts, tag, bodyHtml, tagCls, filterKey: filterKey||'log', pid, dedupeKey, count: 1};
+  allEvents.push(ev);
+  eventCount++;
+  if (dedupeKey) feedDedupeMap[dedupeKey] = ev;
+  document.getElementById('event-count').textContent = eventCount;
+  if (matchesFilter(ev)) {
+    appendFeedItem(ev);
+    const feed = document.getElementById('event-feed');
+    if (feed.scrollHeight - feed.scrollTop - feed.clientHeight < 80)
+      feed.scrollTop = feed.scrollHeight;
+  }
+}
+
+function appendFeedItem(ev) {
+  const feed = document.getElementById('event-feed');
+  const div  = document.createElement('div');
+  div.className = 'ev';
+  div.id = 'ev-' + ev.id;
+  const badge = ev.dedupeKey
+    ? `<span id="dedup-cnt-${ev.id}" class="ev-dedup" style="display:none"></span>`
+    : '';
+  div.innerHTML = `<span class="ev-ts">${ev.ts}</span>`+
+                  `<span class="ev-tag ${ev.tagCls}">${ev.tag}</span>`+
+                  `<span class="ev-body">${ev.bodyHtml}</span>`+badge;
+  feed.appendChild(div);
+  while (feed.children.length > 500) feed.removeChild(feed.firstChild);
+}
+
+function setFilter(f) {
+  activeFilter = f;
+  document.querySelectorAll('.filter-chip').forEach(c =>
+    c.classList.toggle('active', c.dataset.filter === f));
+  const feed = document.getElementById('event-feed');
+  feed.innerHTML = '';
+  allEvents.filter(matchesFilter).slice(-500).forEach(appendFeedItem);
+  feed.scrollTop = feed.scrollHeight;
+}
+
+function matchesFilter(ev) {
+  if (activeFilter === 'all') return ev.filterKey !== 'raw';
+  return ev.filterKey === activeFilter;
+}
+
+// ── Stage progress ───────────────────────────────────────────────────
+function advanceStage(n) {
+  if (n <= demoStage) return;
+  // Mark all earlier stages as done
+  for (let i = 1; i < n; i++) {
+    const el = document.getElementById('st-' + i);
+    if (el) { el.classList.remove('active','critical-hit'); el.classList.add('done'); }
+  }
+  // Mark current stage active (or critical-hit for stage 6)
+  const cur = document.getElementById('st-' + n);
+  if (cur) {
+    cur.classList.remove('done');
+    cur.classList.add(n === 6 ? 'critical-hit' : 'active');
+  }
+  demoStage = n;
+}
+
+function resetStages() {
+  demoStage = 0;
+  for (let i = 1; i <= 6; i++) {
+    const el = document.getElementById('st-' + i);
+    if (el) el.className = 'stage-step';
+  }
+}
+
+// ── Reset entire UI for a fresh demo ────────────────────────────────
+function resetAllUI() {
+  state = {agent_running:false, session_id:null, stats:{}, processes:{}, verdicts:[], findings:[]};
+  allEvents      = [];
+  eventCount     = 0;
+  feedDedupeMap  = {};
+  worstVerdict = 'NONE';
+  document.getElementById('event-feed').innerHTML   = '';
+  document.getElementById('event-count').textContent = 0;
+  document.getElementById('proc-list').innerHTML =
+    `<div class="empty-state"><div class="empty-icon">◉</div>
+     <div>No processes tracked yet</div>
+     <div style="color:var(--text3);font-size:10px">Click RUN DEMO to begin</div></div>`;
+  document.getElementById('proc-count').textContent    = 0;
+  document.getElementById('verdict-list').innerHTML    = '';
+  document.getElementById('verdict-count').textContent = 0;
+  document.getElementById('timeline-area').innerHTML   =
+    `<div class="empty-state" id="timeline-empty"><div class="empty-icon">◌</div>
+     <div>Waiting for hook events</div></div>`;
+  setText('s-alloc',0); setText('s-write',0); setText('s-protect',0);
+  setText('s-crt',0);   setText('s-yara',0);
+  updateWorstVerdictEl('NONE');
+  document.getElementById('session-val').textContent = '─ waiting ─';
+  setStatus('starting');
+  resetStages();
+}
+
+// ── Stats ─────────────────────────────────────────────────────────────
+function bump(id, sev) {
+  if (id === 's-verdict') { updateWorstVerdict(sev); return; }
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = (parseInt(el.textContent)||0) + 1;
+  el.classList.remove('bump'); void el.offsetWidth; el.classList.add('bump');
+}
+
+function updateStats() {
+  const s = state.stats || {};
+  setText('s-alloc',   s.VirtualAllocEx    || 0);
+  setText('s-write',   s.WriteProcessMemory|| 0);
+  setText('s-protect', s.VirtualProtect    || 0);
+  setText('s-crt',     s.CreateRemoteThread|| 0);
+  setText('s-yara',    s.yara_matches      || 0);
+  updateWorstVerdictEl(computeWorst(s));
+}
+
+function computeWorst(s) {
+  if (s.verdicts_critical > 0) return 'CRITICAL';
+  if (s.verdicts_high     > 0) return 'HIGH';
+  if (s.verdicts_medium   > 0) return 'MEDIUM';
+  if (s.verdicts_low      > 0) return 'LOW';
+  return 'NONE';
+}
+
+function updateWorstVerdict(sev) {
+  if (SEV_ORDER.indexOf(sev) > SEV_ORDER.indexOf(worstVerdict))
+    updateWorstVerdictEl(sev);
+}
+
+function updateWorstVerdictEl(sev) {
+  worstVerdict = sev;
+  const el = document.getElementById('s-verdict');
+  el.textContent = sev;
+  el.style.color = SEV_COLOR[sev] || 'var(--text2)';
+  if (sev !== 'NONE') { el.classList.remove('bump'); void el.offsetWidth; el.classList.add('bump'); }
+}
+
+// ── Status ────────────────────────────────────────────────────────────
+function setStatus(s) {
+  const pill = document.getElementById('status-pill');
+  const txt  = document.getElementById('status-text');
+  const dot  = document.getElementById('status-dot');
+  pill.className = '';
+  if (s === 'online') {
+    pill.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 12px;'
+      +'border-radius:20px;background:#0a1a10;border:1px solid #1a4a30;'
+      +'font-size:11px;font-weight:600;letter-spacing:1px;color:var(--green)';
+    txt.textContent = 'ONLINE';
+    dot.style.cssText = 'width:7px;height:7px;border-radius:50%;background:var(--green);'
+      +'box-shadow:0 0 6px var(--green)';
+  } else if (s === 'offline') {
+    pill.className = 'offline'; txt.textContent = 'OFFLINE';
+    dot.style.cssText = '';
+  } else {
+    pill.className = 'starting'; txt.textContent = 'STARTING';
+    dot.style.cssText = '';
+  }
+}
+
+// ── Uptime ────────────────────────────────────────────────────────────
+function startUptimeClock(base) {
+  if (uptimeTimer) clearInterval(uptimeTimer);
+  const t0 = Date.now() - base * 1000;
+  uptimeTimer = setInterval(() => {
+    const s = Math.floor((Date.now() - t0) / 1000);
+    const h = String(Math.floor(s/3600)).padStart(2,'0');
+    const m = String(Math.floor((s%3600)/60)).padStart(2,'0');
+    const sc= String(s%60).padStart(2,'0');
+    document.getElementById('uptime-val').textContent = `${h}:${m}:${sc}`;
+  }, 1000);
+}
+
+// ── Demo button ───────────────────────────────────────────────────────
+function runDemo() {
+  document.getElementById('btn-run').disabled = true;
+  fetch('/api/run-test', {method:'POST'})
+    .then(r => r.json())
+    .then(d => { if (d.error) { toast(d.error,'error'); document.getElementById('btn-run').disabled=false; } })
+    .catch(() => { toast('Server error','error'); document.getElementById('btn-run').disabled=false; });
+}
+
+// ── Toast ─────────────────────────────────────────────────────────────
+function toast(msg, type='info') {
+  const area = document.getElementById('toast-area');
+  const div  = document.createElement('div');
+  div.className = `toast toast-${type}`;
+  div.textContent = msg;
+  area.appendChild(div);
+  setTimeout(() => { if (div.parentNode) div.parentNode.removeChild(div); }, 4000);
+}
+
+// ── Misc helpers ──────────────────────────────────────────────────────
+function setText(id, val) { const el=document.getElementById(id); if(el) el.textContent=val; }
+function now_ts() { return new Date().toISOString().slice(11, 19); }
+
+function escapeHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function shortFT(ft) {
+  if (!ft) return '?';
+  return ft.replace('FINDING_','').replace('PRIVATE_EXECUTABLE','PRIV_EXEC')
+           .replace('YARA_MATCH','YARA').replace('PE_ANOMALIES','PE_ANOM');
+}
+
+function ftCls(ft) {
+  if (!ft) return 'ft-pe';
+  if (ft === 'FINDING_YARA_MATCH') return 'ft-yara';
+  if (ft === 'FINDING_PRIVATE_EXECUTABLE') return 'ft-private';
+  return 'ft-pe';
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────
+connect();
+startUptimeClock(0);
+</script>
+</body>
+</html>

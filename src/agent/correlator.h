@@ -1,8 +1,15 @@
 #pragma once
 #include <windows.h>
+#include <stdbool.h>
 #include "argus/events.h"
 
 #define CORRELATOR_MAX_REGIONS 16
+
+// Active-response kill-switch.
+// TRUE  — agent calls TerminateProcess immediately when a PID reaches CRITICAL.
+// FALSE — monitoring only; prints a disabled notice and leaves the process alive.
+// Flip this in main() before starting the event loop.
+extern bool ENABLE_ACTIVE_RESPONSE;
 
 typedef struct {
     ULONGLONG base_address;

