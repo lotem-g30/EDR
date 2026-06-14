@@ -5,11 +5,12 @@
  * Executes the full "Trinity" injection sequence so every FSM capability
  * flag fires in order and the YARA scan catches the EICAR test string:
  *
- *   ALLOC   — VirtualAllocEx (PAGE_READWRITE)          → has_allocated → LOW
- *   WRITE   — WriteProcessMemory (EICAR test string)   → has_written   → MEDIUM
- *   PROTECT — VirtualProtect   (PAGE_EXECUTE_READ)     → has_protected → HIGH
+ *   ALLOC   — VirtualAllocEx (PAGE_READWRITE)          → has_allocated    → LOW
+ *   WRITE   — WriteProcessMemory (EICAR test string)   → has_written      → MEDIUM
+ *   PROTECT — VirtualProtect   (PAGE_EXECUTE_READ)     → has_protected    → HIGH
  *             ↳ YARA scan triggers → Multi_EICAR_ac8f42d6 fires
  *               → correlator_feed_yara → has_yara → SEVERITY_CRITICAL
+ *   THREAD  — CreateRemoteThread (self)                → has_remote_thread → CRITICAL
  *
  * !! WARNING !!
  * The EICAR payload string is the universal antivirus test signature.
@@ -34,6 +35,8 @@
 #include <windows.h>
 #include <stdio.h>
 #include <string.h>
+
+static DWORD WINAPI dummy_thread(LPVOID p) { (void)p; return 0; }
 
 /*
  * Standard EICAR antivirus test string — matched by Multi_EICAR.yar rule
@@ -62,6 +65,7 @@ int main(void)
         fprintf(stderr, "  ERROR  VirtualAllocEx failed (%lu)\n", GetLastError());
         return 1;
     }
+    Sleep(20000);
 
     /* ── WRITE ── */
     const char* payload = EICAR_PAYLOAD;
@@ -75,6 +79,7 @@ int main(void)
         VirtualFree(mem, 0, MEM_RELEASE);
         return 1;
     }
+    Sleep(20000);
 
     /* ── PROTECT ── */
     DWORD old_protect = 0;
@@ -84,8 +89,21 @@ int main(void)
         VirtualFree(mem, 0, MEM_RELEASE);
         return 1;
     }
+    Sleep(20000);
 
-    printf("\n  Trinity complete  ->  LOW / MEDIUM / HIGH / CRITICAL\n\n");
+    /* ── THREAD ── */
+    HANDLE hThread = CreateRemoteThread(
+        GetCurrentProcess(), NULL, 0,
+        dummy_thread, NULL, 0, NULL);
+    if (!hThread) {
+        fprintf(stderr, "  ERROR  CreateRemoteThread failed (%lu)\n", GetLastError());
+        VirtualFree(mem, 0, MEM_RELEASE);
+        return 1;
+    }
+    WaitForSingleObject(hThread, INFINITE);
+    CloseHandle(hThread);
+
+    printf("\n  Quad complete  ->  LOW / MEDIUM / HIGH / CRITICAL\n\n");
     printf("  Press ENTER to exit...\n");
     getchar();
 
