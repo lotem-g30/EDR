@@ -27,7 +27,9 @@ void correlator_destroy(void);
 // "region":{"base_address":"0x..."} field.
 // Implements deduplication against previously hook-tracked regions before
 // escalating severity.
-void correlator_feed_pesieve(DWORD pid, const char* finding_type_str,
+// Returns true if the finding was NOT deduped (caller should trigger a YARA scan).
+// Returns false if the address was already covered by a hook event (YARA already ran).
+bool correlator_feed_pesieve(DWORD pid, const char* finding_type_str,
                              ULONGLONG base_address);
 
 // Feed a hook event from the argus-events pipe.

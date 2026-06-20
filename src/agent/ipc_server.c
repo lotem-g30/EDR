@@ -276,3 +276,7 @@ void ipc_server_destroy(ArgusIpcServer* s) {
 bool ipc_server_dequeue_trigger(ArgusIpcServer* s, DWORD timeout_ms, ScanTrigger* out) {
     return tq_pop(&s->triggers, timeout_ms, out);
 }
+
+void ipc_server_push_trigger(ArgusIpcServer* s, DWORD pid) {
+    tq_push(&s->triggers, pid);
+}

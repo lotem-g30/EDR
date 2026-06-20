@@ -13,17 +13,43 @@
 #define SCAN_CYCLE_MS  (2 * 60 * 1000)  // structural scan every 2 minutes
 #define FAST_WATCH_MS  200               // realtime memory watcher interval
 
-// Tracks bases of private-executable regions already reported in this session.
-// A base is removed once the region is no longer private+executable, allowing a
-// later reappearance at the same address to be reported again.
+// Tracks bases already reported this session.
+// A base is removed once the region is no longer private+executable so a
+// later reappearance at the same address is reported again.
 static std::set<ULONGLONG> g_reported_private_exec;
+static std::set<ULONGLONG> g_reported_pe_implant;
+
+// Set by the fast watcher when it detects a new suspicious region.
+// Causes scan_thread to run an accelerated structural scan ~2 s later so
+// that code-cave / module-stomp anomalies are caught before the grace period.
+static volatile bool g_trigger_structural_scan = false;
+
+// Returns true if the first two bytes of the region are the MZ DOS magic.
+// Uses SEH so a page-fault (e.g. region unmapped between VirtualQuery and
+// the read) cannot crash the watcher thread.
+static bool region_has_pe_header(const MEMORY_BASIC_INFORMATION& mbi)
+{
+    if (mbi.RegionSize < 2) return false;
+    __try {
+        const unsigned char* p =
+            reinterpret_cast<const unsigned char*>(mbi.BaseAddress);
+        return p[0] == 'M' && p[1] == 'Z';
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
 
 // ── Private executable region walker ─────────────────────────────────────────
 //
-// Walks all MEM_PRIVATE committed regions with any execute permission and emits
-// FINDING_PRIVATE_EXECUTABLE for each one not identified as an Argus relay stub.
-// De-duplicates across watcher passes: the same still-present region is only
-// reported once until it disappears and re-appears.
+// Walks all MEM_PRIVATE committed regions with any execute permission.
+// For each new region:
+//   - if the first two bytes are "MZ" -> emit FINDING_PE_IMPLANT immediately
+//     (catches the hollowed PE as soon as WriteProcessMemory completes, within
+//      the 200 ms watcher interval — no need to wait for the 2-min structural scan)
+//   - otherwise                       -> emit FINDING_PRIVATE_EXECUTABLE
+// Regions already reported as PE_IMPLANT are not re-reported.
+// Regions reported only as PRIVATE_EXECUTABLE are upgraded to PE_IMPLANT if
+// an MZ header appears on a later pass (e.g., payload written after allocation).
 static void walk_private_executable(HANDLE pipe,
                                     DWORD self_pid,
                                     const char* process_name,
@@ -59,23 +85,47 @@ static void walk_private_executable(HANDLE pipe,
             continue;
         }
 
-        if (g_reported_private_exec.count(base))
-            continue;
+        const bool is_pe = region_has_pe_header(mbi);
 
-        printf("[PESIEVE WALK] NEW candidate base=0x%llx size=%llu protect=0x%lx\n",
-               (unsigned long long)base,
-               (unsigned long long)size,
-               (unsigned long)mbi.Protect);
-        fflush(stdout);
+        if (is_pe && !g_reported_pe_implant.count(base)) {
+            // New PE implant (or upgrade from a previously empty RWX region).
+            printf("[PESIEVE WALK] PE_IMPLANT base=0x%llx size=%llu protect=0x%lx\n",
+                   (unsigned long long)base,
+                   (unsigned long long)size,
+                   (unsigned long)mbi.Protect);
+            fflush(stdout);
 
-        const bool sent = emit_finding_at(
-            pipe, self_pid, process_name, session_id, scan_id,
-            FINDING_PRIVATE_EXECUTABLE,
-            base, size, mbi.Protect,
-            "New private executable memory region");
+            const bool sent = emit_finding_at(
+                pipe, self_pid, process_name, session_id, scan_id,
+                FINDING_PE_IMPLANT,
+                base, size, mbi.Protect,
+                "PE header in private executable memory — PE implant detected");
 
-        if (sent)
-            g_reported_private_exec.insert(base);
+            if (sent) {
+                g_reported_pe_implant.insert(base);
+                g_reported_private_exec.insert(base); // suppress future PRIV_EXEC for same base
+                g_trigger_structural_scan = true;     // accelerate structural scan
+            }
+
+        } else if (!is_pe && !g_reported_private_exec.count(base)) {
+            // New anonymous RWX region (no PE yet).
+            printf("[PESIEVE WALK] PRIV_EXEC base=0x%llx size=%llu protect=0x%lx\n",
+                   (unsigned long long)base,
+                   (unsigned long long)size,
+                   (unsigned long)mbi.Protect);
+            fflush(stdout);
+
+            const bool sent = emit_finding_at(
+                pipe, self_pid, process_name, session_id, scan_id,
+                FINDING_PRIVATE_EXECUTABLE,
+                base, size, mbi.Protect,
+                "New private executable memory region");
+
+            if (sent) {
+                g_reported_private_exec.insert(base);
+                g_trigger_structural_scan = true;     // accelerate structural scan
+            }
+        }
     }
 
     // Retire regions that disappeared or lost execute permission.
@@ -83,6 +133,13 @@ static void walk_private_executable(HANDLE pipe,
          it != g_reported_private_exec.end();) {
         if (!currently_executable.count(*it))
             it = g_reported_private_exec.erase(it);
+        else
+            ++it;
+    }
+    for (auto it = g_reported_pe_implant.begin();
+         it != g_reported_pe_implant.end();) {
+        if (!currently_executable.count(*it))
+            it = g_reported_pe_implant.erase(it);
         else
             ++it;
     }
@@ -255,7 +312,19 @@ static DWORD WINAPI scan_thread(LPVOID /*param*/)
 
     while (true) {
         run_structural_scan(self_pid, process_name, session_id);
-        Sleep(SCAN_CYCLE_MS);
+
+        // Sleep in 500 ms chunks so the fast watcher's trigger is picked up
+        // quickly.  When the trigger fires, wait 3 s for writes to settle,
+        // then run an accelerated structural scan to catch code-cave / module-
+        // stomp anomalies before the agent's kill-switch fires.
+        for (DWORD elapsed = 0; elapsed < SCAN_CYCLE_MS; elapsed += 500) {
+            Sleep(500);
+            if (g_trigger_structural_scan) {
+                g_trigger_structural_scan = false;
+                Sleep(3000);
+                run_structural_scan(self_pid, process_name, session_id);
+            }
+        }
     }
 
     return 0;

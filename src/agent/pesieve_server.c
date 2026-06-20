@@ -7,8 +7,9 @@
 #define PESIEVE_PIPE_MAX_INSTANCES 4
 
 struct ArgusPesieveServer {
-    HANDLE       accept_thread;
-    volatile bool running;
+    HANDLE          accept_thread;
+    volatile bool   running;
+    ArgusIpcServer* ipc;
 };
 
 // Lightweight JSON helpers (no cJSON dep required for the flat pesieve JSON).
@@ -41,9 +42,19 @@ static bool ps_json_get_uint(const char* line, const char* key, DWORD* out) {
     return true;
 }
 
+typedef struct {
+    HANDLE          pipe;
+    ArgusIpcServer* ipc;
+} ReaderCtx;
+
 // Reads NDJSON ScanFinding lines and routes each one to the correlator.
+// If the correlator says the finding is new (not already covered by a hook),
+// enqueues a YARA scan trigger via the shared IPC trigger queue.
 static DWORD WINAPI pesieve_reader_thread(LPVOID param) {
-    HANDLE pipe = (HANDLE)param;
+    ReaderCtx* rctx = (ReaderCtx*)param;
+    HANDLE          pipe = rctx->pipe;
+    ArgusIpcServer* ipc  = rctx->ipc;
+    free(rctx);
 
     char  accum[65536];
     int   accum_pos = 0;
@@ -80,7 +91,11 @@ static DWORD WINAPI pesieve_reader_thread(LPVOID param) {
                     if (ps_json_get_str(start, "base_address",
                                         base_addr_str, sizeof(base_addr_str)))
                         base_addr = strtoull(base_addr_str, NULL, 16);
-                    correlator_feed_pesieve(pid, finding_type, base_addr);
+                    bool trigger_yara =
+                        correlator_feed_pesieve(pid, finding_type, base_addr);
+
+                    if (trigger_yara && ipc)
+                        ipc_server_push_trigger(ipc, pid);
 
                     /* Re-emit raw JSON so the dashboard parser picks it up
                      * as a SCAN_FINDING (same format as internal scanner). */
@@ -134,18 +149,25 @@ static DWORD WINAPI pesieve_accept_thread(LPVOID param) {
         printf("  PE-Sieve DLL connected\n");
         fflush(stdout);
 
-        HANDLE t = CreateThread(NULL, 0, pesieve_reader_thread, pipe, 0, NULL);
+        ReaderCtx* rctx = (ReaderCtx*)malloc(sizeof(ReaderCtx));
+        if (!rctx) { CloseHandle(pipe); continue; }
+        rctx->pipe = pipe;
+        rctx->ipc  = s->ipc;
+
+        HANDLE t = CreateThread(NULL, 0, pesieve_reader_thread, rctx, 0, NULL);
         if (t) CloseHandle(t);
+        else   { free(rctx); CloseHandle(pipe); }
     }
 
     return 0;
 }
 
-ArgusPesieveServer* pesieve_server_create(void) {
+ArgusPesieveServer* pesieve_server_create(ArgusIpcServer* ipc) {
     ArgusPesieveServer* s =
         (ArgusPesieveServer*)calloc(1, sizeof(ArgusPesieveServer));
     if (!s) return NULL;
 
+    s->ipc     = ipc;
     s->running = true;
     s->accept_thread = CreateThread(NULL, 0, pesieve_accept_thread, s, 0, NULL);
     if (!s->accept_thread) {

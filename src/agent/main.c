@@ -40,9 +40,10 @@ static DWORD WINAPI ScanWorkerThread(LPVOID param) {
     for (size_t i = 0; i < count; i++) {
         if (findings[i].finding_type == FINDING_YARA_MATCH)
             correlator_feed_yara(ctx->pid, findings[i].detail.yara_rule);
-        else if (findings[i].finding_type == FINDING_PRIVATE_EXECUTABLE)
-            correlator_feed_pesieve(ctx->pid, "FINDING_PRIVATE_EXECUTABLE",
-                                    findings[i].region.base_address);
+        /* FINDING_PRIVATE_EXECUTABLE from memscan is NOT re-fed into the
+         * correlator here.  The scanner already ran YARA on the same region;
+         * feeding it back would push a redundant scan trigger and cause a
+         * feedback loop that floods the output with "late evidence" noise. */
 
         /* Emit serialised finding for the dashboard parser. */
         char fbuf[4096];
@@ -85,9 +86,9 @@ int main(void) {
     char* last_sep = strrchr(exe_path, '\\');
     if (last_sep) {
         *last_sep = '\0';
-        snprintf(rules_path, sizeof(rules_path), "%s\\rules\\Multi_EICAR.yar", exe_path);
+        snprintf(rules_path, sizeof(rules_path), "%s\\rules", exe_path);
     } else {
-        strncpy(rules_path, "rules\\Multi_EICAR.yar", sizeof(rules_path) - 1);
+        strncpy(rules_path, "rules", sizeof(rules_path) - 1);
     }
     if (yara_load_rules(rules_path, &rules) == 0) {
         opts.yara_rules = rules;
@@ -107,7 +108,7 @@ int main(void) {
     printf("  pipe     \\\\.\\pipe\\argus-events\n");
 
     // ── PE-Sieve DLL server ───────────────────────────────────────────────────
-    ArgusPesieveServer* pesieve_srv = pesieve_server_create();
+    ArgusPesieveServer* pesieve_srv = pesieve_server_create(server);
     if (!pesieve_srv) {
         fprintf(stderr, "[MAIN] Failed to create PE-Sieve server\n");
         ipc_server_destroy(server);

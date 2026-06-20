@@ -32,6 +32,7 @@ typedef struct {
     bool          has_protected;
     bool          has_remote_thread;
     bool          has_yara;
+    bool          has_pe_implant;   /* PE-Sieve confirmed PE header in private memory */
     bool          is_dead;
     /* Diagnostic fields — populated before calling evaluate_state_and_severity(). */
     char          last_context[256];    /* "Source: Finding" for the current event   */
@@ -136,13 +137,18 @@ static void active_response_kill_handle(HANDLE process_handle, DWORD pid) {
         BOOL ok = TerminateProcess(process_handle, 1);
         DWORD err = ok ? ERROR_SUCCESS : GetLastError();
 
-        if (ok)
-            printf("  [OK]  Success: Process %lu terminated.\n",
+        if (ok) {
+            printf("  [OK]  Process %lu terminated.\n", (unsigned long)pid);
+        } else if (err == ERROR_ACCESS_DENIED &&
+                   WaitForSingleObject(process_handle, 0) == WAIT_OBJECT_0) {
+            /* Process already exited before the grace period elapsed.
+             * TerminateProcess returns ERROR_ACCESS_DENIED for dead processes. */
+            printf("  [OK]  Process %lu already exited (self-terminated or crashed).\n",
                    (unsigned long)pid);
-        else
-            printf("  [ERR] Error: Failed to terminate process %lu. "
-                   "Error Code: %lu\n",
+        } else {
+            printf("  [ERR] Failed to terminate process %lu. Error Code: %lu\n",
                    (unsigned long)pid, (unsigned long)err);
+        }
     } else {
         printf("  [!]  KILL-SWITCH: Disabled, skipping termination.\n");
     }
@@ -308,7 +314,7 @@ static void evaluate_state_and_severity(PidEntry* e) {
 
 /* ── Feed functions ───────────────────────────────────────────────────────── */
 
-void correlator_feed_pesieve(DWORD pid, const char* finding_type_str,
+bool correlator_feed_pesieve(DWORD pid, const char* finding_type_str,
                               ULONGLONG base_address)
 {
     bool is_structural =
@@ -396,12 +402,13 @@ void correlator_feed_pesieve(DWORD pid, const char* finding_type_str,
             fflush(stdout);
 
             LeaveCriticalSection(&s_lock);
-            return;
+            return false;   /* already CRITICAL — YARA already ran */
         }
 
         if (is_structural) {
-            e->has_written   = true;
-            e->has_protected = true;
+            e->has_written    = true;
+            e->has_protected  = true;
+            e->has_pe_implant = true;
             evaluate_state_and_severity(e);
         } else if (is_local_mod && base_address != 0) {
             for (int i = 0; i < e->region_count; i++) {
@@ -420,16 +427,58 @@ void correlator_feed_pesieve(DWORD pid, const char* finding_type_str,
                 evaluate_state_and_severity(e);
             }
         } else {
+            /* FINDING_PRIVATE_EXECUTABLE / anonymous RWX region. */
+            Severity old_sev = e->severity;
             e->has_protected = true;
             evaluate_state_and_severity(e);
+            /* If severity didn't increase, PE-Sieve is corroborating what a
+             * hook already detected.  Print a visible block instead of staying
+             * silent so it's clear PE-Sieve is actively watching. */
+            if (!already_critical && e->severity == old_sev &&
+                old_sev != (Severity)-1) {
+                const char* fd = strip_prefix(ft[0] ? ft : "FINDING_PRIVATE_EXECUTABLE");
+                printf("\n  [SOURCE: %-10s] | [SEVERITY: %s]  pid %lu\n",
+                       "PE-Sieve", s_sev[old_sev], (unsigned long)pid);
+                printf("  Finding:       %s\n", fd);
+                printf("  Justification: %s\n", e->justification);
+                printf("  Note:          Corroborates Hook detection (no escalation)\n\n");
+                printf("{\"type\":\"PROCESS_EVIDENCE\",\"pid\":%lu,"
+                       "\"severity\":\"%s\",\"source\":\"PE-Sieve\","
+                       "\"finding\":\"%s\"}\n",
+                       (unsigned long)pid, s_sev[old_sev], fd);
+                fflush(stdout);
+            }
         }
     }
+
+    /* Save values needed for the dedup print (below the lock). */
+    Severity exit_sev = (e && (int)e->severity >= 0) ? e->severity : SEVERITY_HIGH;
+    char     exit_just[512] = {0};
+    if (e) strncpy(exit_just, e->justification, sizeof(exit_just) - 1);
+
     LeaveCriticalSection(&s_lock);
 
-    if (deduped)
-        printf("  dedup     pid %-6lu  %s @ 0x%llx (covered by %s hook)\n",
-               (unsigned long)pid, finding_type_str,
-               (unsigned long long)base_address, dup_api);
+    if (deduped) {
+        /* PE-Sieve structural scan confirmed a region that the hook already
+         * tracked.  Emit a proper block (not just a one-liner) so it shows
+         * up in the output as structural corroboration. */
+        const char* fd = strip_prefix(finding_type_str ? finding_type_str : "");
+        printf("\n  [SOURCE: %-10s] | [SEVERITY: %s]  pid %lu\n",
+               "PE-Sieve", (int)exit_sev >= 0 ? s_sev[exit_sev] : "?",
+               (unsigned long)pid);
+        printf("  Finding:       %s\n", fd);
+        printf("  Justification: %s\n", exit_just);
+        printf("  Structural:    Confirmed by %s hook — in-memory image diverges "
+               "from disk\n\n", dup_api);
+        printf("{\"type\":\"PROCESS_EVIDENCE\",\"pid\":%lu,"
+               "\"severity\":\"%s\",\"source\":\"PE-Sieve\","
+               "\"finding\":\"%s\"}\n",
+               (unsigned long)pid,
+               (int)exit_sev >= 0 ? s_sev[exit_sev] : "?", fd);
+        fflush(stdout);
+        return false;   /* hook already triggered YARA for this address */
+    }
+    return true;    /* new finding — caller should trigger a YARA scan */
 }
 
 void correlator_feed_hook_event(DWORD pid, const char* api_name,
@@ -501,8 +550,9 @@ void correlator_feed_hook_event(DWORD pid, const char* api_name,
 
         } else if (strcmp(api_name, "CreateRemoteThread") == 0) {
             snprintf(e->justification, sizeof(e->justification),
-                "Thread created in remote process with start address in MEM_PRIVATE "
-                "(non-image) memory — cross-process shellcode execution.");
+                "Remote thread created in target process at 0x%llx — "
+                "cross-process code execution (shellcode or stomped module).",
+                (unsigned long long)address);
 
         } else if (strcmp(api_name, "CreateThread") == 0) {
             snprintf(e->justification, sizeof(e->justification),

@@ -28,6 +28,37 @@ void yara_global_finalize(void) {
 
 // ── Rule loading ──────────────────────────────────────────────────────────────
 
+static void yara_compiler_error_cb(int error_level,
+                                   const char* file_name,
+                                   int line_number,
+                                   const YR_RULE* rule,
+                                   const char* message,
+                                   void* user_data)
+{
+    (void)rule; (void)user_data;
+    const char* level = (error_level == YARA_ERROR_LEVEL_ERROR) ? "error" : "warning";
+    fprintf(stderr, "[YARA] %s:%d: %s: %s\n",
+            file_name ? file_name : "?", line_number, level, message);
+}
+
+// Validate a single rule file in an isolated compiler.
+// Returns 0 if the file compiled cleanly, -1 otherwise.
+static int yara_validate_file(const char* full_path, const char* display_name) {
+    YR_COMPILER* val = NULL;
+    if (yr_compiler_create(&val) != ERROR_SUCCESS)
+        return -1;
+    yr_compiler_set_callback(val, yara_compiler_error_cb, NULL);
+    FILE* fp = fopen(full_path, "r");
+    if (!fp) {
+        yr_compiler_destroy(val);
+        return -1;
+    }
+    int errs = yr_compiler_add_file(val, fp, NULL, display_name);
+    fclose(fp);
+    yr_compiler_destroy(val);
+    return (errs == 0) ? 0 : -1;
+}
+
 int yara_load_rules(const char* path, YR_RULES** rules_out) {
     *rules_out = NULL;
 
@@ -36,6 +67,7 @@ int yara_load_rules(const char* path, YR_RULES** rules_out) {
         fprintf(stderr, "[YARA] yr_compiler_create failed\n");
         return -1;
     }
+    yr_compiler_set_callback(compiler, yara_compiler_error_cb, NULL);
 
     DWORD attrs = GetFileAttributesA(path);
     if (attrs == INVALID_FILE_ATTRIBUTES) {
@@ -61,35 +93,40 @@ int yara_load_rules(const char* path, YR_RULES** rules_out) {
         do {
             char full_path[MAX_PATH];
             snprintf(full_path, sizeof(full_path), "%s\\%s", path, fd.cFileName);
+
+            // Validate in an isolated compiler first so errors never
+            // contaminate the shared compiler's state.
+            if (yara_validate_file(full_path, fd.cFileName) != 0) {
+                fprintf(stderr, "[YARA] Skipping %s (see errors above)\n",
+                        fd.cFileName);
+                continue;
+            }
+
             FILE* fp = fopen(full_path, "r");
             if (!fp) {
                 fprintf(stderr, "[YARA] Cannot open rule file: %s\n", full_path);
                 continue;
             }
-            int errs = yr_compiler_add_file(compiler, fp, NULL, fd.cFileName);
+            yr_compiler_add_file(compiler, fp, NULL, fd.cFileName);
             fclose(fp);
-            if (errs > 0)
-                fprintf(stderr, "[YARA] %d error(s) in %s — skipping\n",
-                        errs, fd.cFileName);
-            else
-                files_added++;
+            files_added++;
         } while (FindNextFileA(hFind, &fd));
 
         FindClose(hFind);
     } else {
+        if (yara_validate_file(path, path) != 0) {
+            fprintf(stderr, "[YARA] Rule file has errors: %s\n", path);
+            yr_compiler_destroy(compiler);
+            return -1;
+        }
         FILE* fp = fopen(path, "r");
         if (!fp) {
             fprintf(stderr, "[YARA] Cannot open rule file: %s\n", path);
             yr_compiler_destroy(compiler);
             return -1;
         }
-        int errs = yr_compiler_add_file(compiler, fp, NULL, path);
+        yr_compiler_add_file(compiler, fp, NULL, path);
         fclose(fp);
-        if (errs > 0) {
-            fprintf(stderr, "[YARA] %d error(s) in %s\n", errs, path);
-            yr_compiler_destroy(compiler);
-            return -1;
-        }
         files_added = 1;
     }
 

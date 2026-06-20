@@ -105,6 +105,26 @@ target_include_directories(test_target PRIVATE ${CMAKE_SOURCE_DIR}/include)
 add_executable(shellcode_runner src/shellcode_runner/main.c)
 
 # ============================================================================
+# test_ProcessHollowing - Cross-process hollowing E2E test (x64)
+# ============================================================================
+add_executable(test_ProcessHollowing src/test_ProcessHollowing/main.c)
+
+# ============================================================================
+# test_ModuleStomping - Module stomping E2E test (x64) - entry-point variant
+# ============================================================================
+add_executable(test_ModuleStomping "src/test_Module Stomping1/main.c")
+
+# ============================================================================
+# test_ModuleStomping2 - Module stomping E2E test (x64) - export-function variant
+# ============================================================================
+add_executable(test_ModuleStomping2 src/test_ModuleStomping2/main.c)
+
+# ============================================================================
+# test_FalsePositive - False-positive validation: inject EDR into a benign process
+# ============================================================================
+add_executable(test_FalsePositive src/test_FalsePositive/main.c)
+
+# ============================================================================
 # dummy_malware - Synthetic RWX shellcode target for PE-Sieve E2E tests
 # ============================================================================
 add_executable(dummy_malware src/agent/dummy_malware.c)
@@ -123,7 +143,8 @@ target_include_directories(test_eq PRIVATE
 
 # Set output directories (all binaries go to build/bin/<config>/)
 set_target_properties(argus_hook argus_agent injector test_target test_eq
-                      dummy_malware shellcode_runner PROPERTIES
+                      dummy_malware shellcode_runner test_ProcessHollowing
+                      test_ModuleStomping test_ModuleStomping2 test_FalsePositive PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
     ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
